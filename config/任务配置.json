@@ -1,0 +1,13 @@
+{
+  "barcode_mapping": {
+    "1": [0.0, 0.0],
+    "2": [100.0, 0.0],
+    "3": [200.0, 0.0]
+  },
+  "stations": {
+    "start": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
+    "temporary": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
+    "processing": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
+    "finished": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0}
+  }
+}

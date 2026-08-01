@@ -1,0 +1,5 @@
+numpy
+opencv-contrib-python
+pyserial
+ultralytics
+Pillow

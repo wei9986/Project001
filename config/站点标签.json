@@ -1,0 +1,9 @@
+{
+  "dictionary": "DICT_APRILTAG_36h11",
+  "tag_size_mm": 40.0,
+  "stations": {
+    "1": "material_area",
+    "2": "assembly_area",
+    "3": "finished_area"
+  }
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Industrial logistics vision module simulation
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/vision-module
+ExecStart=/bin/bash /opt/vision-module/scripts/启动视觉仿真.sh
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

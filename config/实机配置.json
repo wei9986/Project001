@@ -1,0 +1,30 @@
+{
+  "camera": {
+    "source": 0,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "reconnect_delay_s": 2.0
+  },
+  "scanner": {
+    "mode": "camera_qr"
+  },
+  "controller": {
+    "port": "/dev/ttyUSB1",
+    "baudrate": 115200,
+    "reconnect_delay_s": 2.0
+  },
+  "protocol": {
+    "heartbeat_interval_ms": 100,
+    "offline_timeout_ms": 1000,
+    "ack_timeout_ms": 1500,
+    "max_retries": 1
+  },
+  "colors": ["red", "green", "blue"],
+  "color_config": "config/颜色追踪配置.json",
+  "calibration": null,
+  "display": false,
+  "record_video": "annotated.mp4",
+  "archive_error_samples": true,
+  "error_frame_interval": 30
+}

@@ -1,0 +1,10 @@
+{
+  "task_id": "SIM-001",
+  "first_batch": [
+    {"material_id": "F1", "color": "red", "ring_code": "1"},
+    {"material_id": "F2", "color": "green", "ring_code": "2"}
+  ],
+  "second_batch": [
+    {"material_id": "S1", "color": "blue", "ring_code": "3"}
+  ]
+}

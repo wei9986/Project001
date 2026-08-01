@@ -1,0 +1,51 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Application Simulation",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "app.视觉应用",
+            "args": ["--mode", "simulation"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Color Tracking Preview",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vision.颜色追踪",
+            "args": [
+                "--source", "0",
+                "--config", "config/颜色追踪配置.json",
+                "--colors", "red"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Offline Evaluation",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "tools.离线评测",
+            "args": ["--output", "logs\\offline_evaluation_vscode.json"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Current Python File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

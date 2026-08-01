@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.idea/
+.venv/
+venv/
+
+# Runtime output and hardware-specific calibration artifacts.
+logs/*.log
+logs/*.jsonl
+config/camera_calibration.json
+data/calibration/
+data/shapes_dataset/
+models/*.pt
+logs/
+
+# YOLO 训练输出（权重/曲线/混淆矩阵，体积大不入库）
+runs/

@@ -1,0 +1,46 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run All Unit Tests",
+            "type": "process",
+            "command": "..\\.venv\\Scripts\\python.exe",
+            "args": ["-m", "unittest", "discover", "-s", "tests", "-v"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "group": {"kind": "test", "isDefault": true},
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Preflight Check",
+            "type": "process",
+            "command": "..\\.venv\\Scripts\\python.exe",
+            "args": ["-m", "tools.启动检查", "--json"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Offline Evaluation",
+            "type": "process",
+            "command": "..\\.venv\\Scripts\\python.exe",
+            "args": ["-m", "tools.离线评测", "--output", "logs\\offline_evaluation_vscode.json"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Application Simulation",
+            "type": "process",
+            "command": "..\\.venv\\Scripts\\python.exe",
+            "args": ["-m", "app.视觉应用", "--mode", "simulation"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile Python Modules",
+            "type": "process",
+            "command": "..\\.venv\\Scripts\\python.exe",
+            "args": ["-m", "compileall", "-q", "app", "mission", "protocol", "vision", "tools", "tests"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        }
+    ]
+}
