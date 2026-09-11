@@ -17,3 +17,8 @@ logs/
 
 # YOLO 训练输出（权重/曲线/混淆矩阵，体积大不入库）
 runs/
+
+# 运行产物：验证报告 / 实机会话 / 相机探测截图（可重生成，不入库）
+reports/
+test_logs/
+camera_probe_*.png

@@ -36,6 +36,22 @@
             "justMyCode": true
         },
         {
+            "name": "Qt Color Tuner",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "tools.qt调参",
+            "args": [
+                "--source", "0",
+                "--config", "config/颜色追踪配置.json"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
             "name": "Current Python File",
             "type": "debugpy",
             "request": "launch",
