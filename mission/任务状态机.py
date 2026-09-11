@@ -155,12 +155,12 @@ class MissionStateMachine:
             self._transition(MissionState.S4_SECOND_BATCH_ASSEMBLY, now_ms)
             return self._load_next_second(now_ms)
         if self.state == MissionState.S4_SECOND_BATCH_ASSEMBLY and event.name == "material_loaded":
-            record = self._require_current()
+            record = self._require_current(expected_batch="second")
             self.plan.update(record.instruction.material_id, MaterialStatus.ON_ROBOT)
             self.in_flight = None
             return self._hardware_action("assemble_material", material=record.instruction.__dict__)
         if self.state == MissionState.S4_SECOND_BATCH_ASSEMBLY and event.name == "assembly_done":
-            record = self._require_current()
+            record = self._require_current(expected_batch="second")
             self.plan.update(record.instruction.material_id, MaterialStatus.RING_PLACED)
             self.plan.update(record.instruction.material_id, MaterialStatus.ASSEMBLED)
             self.in_flight = None
@@ -189,11 +189,27 @@ class MissionStateMachine:
             return self._action("safe_stop", reason="异常恢复失败")
         return []
 
-    def _require_current(self):
-        """获取当前正在处理的物料；缺失时直接报错。"""
+    def _require_current(self, expected_batch: Optional[str] = None):
+        """获取当前正在处理的物料；缺失或批次不符时直接报错。
+
+        ``expected_batch`` 用于 S4 装配：装配的必须是第二批物料（F-06）。
+        缺省不检查批次，保持 S2/S3 既有语义不变。
+        """
         if self.plan is None or self.current_material_id is None:
             raise RuntimeError("当前没有可执行物料")
-        return next(record for record in self.plan.records if record.instruction.material_id == self.current_material_id)
+        record = next(
+            (item for item in self.plan.records
+             if item.instruction.material_id == self.current_material_id),
+            None,
+        )
+        if record is None:
+            raise RuntimeError(f"当前物料不在任务计划中: {self.current_material_id}")
+        if expected_batch is not None and record.batch != expected_batch:
+            raise RuntimeError(
+                f"物料批次不符：期望 {expected_batch}，实际 {record.batch}"
+                f"（material_id={record.instruction.material_id}）"
+            )
+        return record
 
     def _load_next_first(self, now_ms: float) -> List[MissionAction]:
         """选择下一件第一批物料，或进入下一阶段。"""

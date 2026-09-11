@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Iterable, Optional, Tuple
+from typing import Any, Deque, Iterable, Optional, Tuple
 
 import numpy as np
 
@@ -70,12 +70,38 @@ class VirtualScanner:
 
 @dataclass
 class VirtualSensors:
-    """供安全模块使用的模拟传感器值。"""
+    """供安全模块使用的模拟传感器值。
+
+    接口与实机 LiveSensors 对齐（含 ``update``），使运行循环与安全门的
+    代码路径在仿真/实机下一致，仿真才能真正验证安全拦截（F-08）。
+    """
 
     tof_distance_mm: Optional[float] = None
     limit_triggered: bool = False
-    # None=未接入（跳过装配检查），与实机 LiveSensors 语义对齐。
+    # True=已确认；None=未接入（跳过装配检查）；与实机 LiveSensors 语义对齐。
     grasp_confirmed: Optional[bool] = None
+
+    def update(self, **kwargs: Any) -> "VirtualSensors":
+        """按字段更新读数；未提供的字段保持不变。
+
+        校验规则与 LiveSensors.update 保持一致，避免仿真接受实机会拒绝的脏值。
+        """
+        for key, value in kwargs.items():
+            if key == "tof_distance_mm":
+                if value is not None and not isinstance(value, (int, float)):
+                    raise ValueError(f"tof_distance_mm 必须是数值或 null，实际 {type(value).__name__}")
+                self.tof_distance_mm = float(value) if value is not None else None
+            elif key == "limit_triggered":
+                if not isinstance(value, bool):
+                    raise ValueError(f"limit_triggered 必须是布尔值，实际 {type(value).__name__}")
+                self.limit_triggered = value
+            elif key == "grasp_confirmed":
+                if value is not None and not isinstance(value, bool):
+                    raise ValueError(f"grasp_confirmed 必须是布尔值或 null，实际 {type(value).__name__}")
+                self.grasp_confirmed = value
+            else:
+                raise ValueError(f"未知传感器字段: {key}")
+        return self
 
     def safety_snapshot(self) -> dict:
         """返回便于写日志的传感器快照。"""

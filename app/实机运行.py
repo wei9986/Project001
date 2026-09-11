@@ -244,6 +244,14 @@ class LiveRuntime:
                 self._clear_blocking_pending("state_timeout" if action.name == "recover" else "safe_stop")
                 self._fine_localizer = None
                 self._fine_pending_action = None
+                if action.name == "recover":
+                    # F-09：恢复事件结构化记录，供复盘识别频繁抖动。
+                    # 配额放宽（F-01）后，累积恢复次数是发现真问题的关键信号。
+                    self.session.record_recovery(
+                        attempt=int(action.data.get("attempt", 0)),
+                        resume_state=self.machine.resume_state.value,
+                        reason=str(action.data.get("reason", "")),
+                    )
             elif action.name not in ("recover", "safe_stop"):
                 decision = self.safety_monitor.check(action.name, self.sensors)
                 if not decision.allowed:

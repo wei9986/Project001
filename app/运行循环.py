@@ -263,7 +263,13 @@ class RuntimeLoop:
 
 
 def create_simulation_runtime(config: ApplicationConfig) -> RuntimeLoop:
-    """创建无硬件、结果固定的集成仿真环境。"""
+    """创建无硬件、结果固定的集成仿真环境。
+
+    F-08：仿真显式提供抓取确认信号（True）而不是 None。
+    之前仿真与实机配置都用 None，安全门恒被跳过，导致「装配拦截」这条
+    关键安全路径在仿真里根本得不到验证。现在仿真默认走「已确认」放行，
+    使安全门真正参与判定；测试可把 grasp_confirmed 置为 False 覆盖拦截路径。
+    """
     root = project_root()
     scanner = VirtualScanner([load_simulation_scan(config.task_path)])
     camera = VirtualCamera(build_demo_frames())
@@ -276,5 +282,5 @@ def create_simulation_runtime(config: ApplicationConfig) -> RuntimeLoop:
         station_config_path=root / "config" / "站点标签.json",
         color_names=("red",),
         status_logger=RuntimeSnapshotLogger(config.log_path.with_suffix(".status.jsonl")),
-        sensors=VirtualSensors(tof_distance_mm=120.0, grasp_confirmed=None),
+        sensors=VirtualSensors(tof_distance_mm=120.0, grasp_confirmed=True),
     )

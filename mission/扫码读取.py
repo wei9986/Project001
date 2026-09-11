@@ -18,6 +18,11 @@ class ScanType(str, Enum):
     CODE128 = "code128"
 
 
+# 任务码长度上限：与扫码器 max_line_length（默认 512）对齐并留余量。
+# 超长任务码几乎必然是噪声或协议错位，直接判无效比喂给 JSON 解析更安全。
+MAX_TASK_QR_LENGTH = 4096
+
+
 @dataclass(frozen=True)
 class ScanResult:
     scan_type: ScanType
@@ -56,11 +61,23 @@ class ExternalScannerParser:
 
 
 def validate_scan(scan_type: ScanType, value: str, source: str) -> ScanResult:
-    """校验扫码文本并保留来源和错误信息。"""
+    """校验扫码文本并保留来源和错误信息。
+
+    TASK_QR 做轻量预校验（非空 + JSON 对象前缀 + 长度上限），但不在此解析
+    JSON——完整结构与字段校验由 ``parse_task_qr`` 负责，保持分层。
+    这样脏数据在扫码层就被判无效，``scan_retries`` 才反映真实的扫码质量，
+    而不是被推迟成「JSON 解析失败」(F-05)。
+    """
     if not value:
         return ScanResult(scan_type, value, False, source, "扫码结果为空")
     if scan_type == ScanType.CODE128 and not re.fullmatch(r"[0-9A-Za-z._-]{1,64}", value):
         return ScanResult(scan_type, value, False, source, "Code128 内容包含非法字符")
+    if scan_type == ScanType.TASK_QR:
+        if len(value) > MAX_TASK_QR_LENGTH:
+            return ScanResult(scan_type, value, False, source,
+                              f"任务码超长（{len(value)} > {MAX_TASK_QR_LENGTH}）")
+        if not value.lstrip().startswith("{"):
+            return ScanResult(scan_type, value, False, source, "任务码必须是 JSON 对象")
     return ScanResult(scan_type, value, True, source)
 
 
