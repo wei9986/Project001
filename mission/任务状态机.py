@@ -38,6 +38,22 @@ class MissionAction:
 class MissionStateMachine:
     """根据任务计划和物料状态推进流程。"""
 
+    # 成功推进事件：收到这些确认事件即视为任务实质前进，归还恢复配额。
+    # 恢复类事件（recover/recovery_done/action_failed/communication_lost/
+    # safety_fault）刻意不在其中，防止恢复刷屏绕过次数限制。
+    _PROGRESS_EVENTS = frozenset({
+        "self_test_ok",
+        "task_scanned",
+        "material_loaded",
+        "ring_placed",
+        "assembly_done",
+        "home_confirmed",
+    })
+
+    # S0 自检握手是纯电气/PING 级交互，应在秒级完成；给独立短超时，
+    # 避免相机或串口在自检阶段静默失效时任务永久空转（F-03）。
+    DEFAULT_S0_TIMEOUT_MS = 3000.0
+
     def __init__(self, state_timeout_ms: float = 5000.0, max_recovery_attempts: int = 2,
                  max_scan_retries: int = 3,
                  state_timeouts: Optional[Dict[str, float]] = None) -> None:
@@ -48,6 +64,7 @@ class MissionStateMachine:
         self.state_timeout_ms = state_timeout_ms
         # 可选的分状态超时覆盖（键为状态 value，如 "S2_first_batch"）；未配置的状态用全局默认。
         self.state_timeouts: Dict[str, float] = dict(state_timeouts or {})
+        self.state_timeouts.setdefault(MissionState.S0_INIT.value, self.DEFAULT_S0_TIMEOUT_MS)
         for value, timeout in self.state_timeouts.items():
             if timeout <= 0:
                 raise ValueError(f"状态 {value} 的超时必须是正数")
@@ -94,6 +111,12 @@ class MissionStateMachine:
             self.__init__(self.state_timeout_ms, self.max_recovery_attempts,
                           self.max_scan_retries, self.state_timeouts)
             return self._action("reset_outputs")
+        # F-01：任务实质推进即归还恢复配额。
+        # max_recovery_attempts 的语义是「连续失败配额」，不是「全程总量」；
+        # 否则长任务里三次互不相关的瞬时故障（即便每次恢复成功）也会让
+        # 机器人永久停机。放在这里而不是各分支，是为了不漏掉任何成功路径。
+        if event.name in self._PROGRESS_EVENTS:
+            self.recovery_attempts = 0
         if event.name in {"action_failed", "communication_lost", "safety_fault"}:
             return self._recover(now_ms, event.name)
         if self.state == MissionState.S0_INIT and event.name == "start":
@@ -211,8 +234,11 @@ class MissionStateMachine:
 
         RECOVERY 态同样参与超时判定：recovery_done 迟迟不来（恢复卡死）时
         重试恢复，次数耗尽后进入 FAILED，避免永久停摆。
+
+        S0_INIT 不再豁免（F-03）：自检握手失败/相机未出图时，若这里直接返回
+        空列表，运行循环会永远空转且无任何恢复动作。S0 使用独立短超时。
         """
-        if self.state in (MissionState.S0_INIT, MissionState.COMPLETE, MissionState.FAILED):
+        if self.state in (MissionState.COMPLETE, MissionState.FAILED):
             return []
         timeout_ms = self.state_timeouts.get(self.state.value, self.state_timeout_ms)
         if now_ms - self.entered_ms <= timeout_ms:

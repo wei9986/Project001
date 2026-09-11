@@ -39,6 +39,17 @@ class TaskAction:
 class TaskStateMachine:
     """只消费事件并输出动作，不直接控制硬件。"""
 
+    # 成功推进事件：收到即视为实质前进，归还恢复配额（F-01，与任务状态机同语义）。
+    # 恢复类事件（recover/recovery_done/grasp_failed/place_failed）刻意不在其中。
+    _PROGRESS_EVENTS = frozenset({
+        "vision_update",
+        "arrived_near_target",
+        "grasp_done",
+        "grasp_verified",
+        "place_done",
+        "place_verified",
+    })
+
     def __init__(self, fine_localizer: FineLocalizer, state_timeout_ms: float = 5000.0,
                  max_recovery_attempts: int = 2) -> None:
         if state_timeout_ms <= 0 or max_recovery_attempts < 0:
@@ -72,6 +83,9 @@ class TaskStateMachine:
             self.recovery_attempts = 0
             self.selected_target = None
             return self._action("reset_outputs")
+        # F-01：实质推进即归还恢复配额，避免长任务被「总配额」耗死。
+        if event.name in self._PROGRESS_EVENTS:
+            self.recovery_attempts = 0
         if self.state == TaskState.IDLE and event.name == "start":
             self._transition(TaskState.SEARCHING, now_ms)
             return self._action("search_target")

@@ -191,11 +191,20 @@ class LiveRuntime:
 
     def _send_controller_packet(self, action: MissionAction, message_type: MessageType, now_ms: float) -> bool:
         """编码并写入控制器；写失败时 fail_pending 后返回 False。"""
+        # F-04：安全停止是最高优先级指令，必须能抢占任何悬挂命令。
+        # 协议同一时刻只允许一条未完成命令，若此时 pending 阻塞（例如 F407
+        # 已 ACK 但迟迟不 DONE），safe_stop 会被 send_command 拒绝，导致
+        # F407 收不到任何停止指令。这里先清障再发。
+        if action.name == "safe_stop":
+            self._clear_blocking_pending("safe_stop_priority")
         try:
             packet = self.protocol.send_command(message_type, json_payload(action.data), now_ms)
         except (RuntimeError, ValueError, TypeError) as exc:
             self.session.write("controller_error", {"action": action.name, "error": str(exc)})
-            if action.name != "safe_stop":
+            if action.name == "safe_stop":
+                # 比赛复盘关键证据：安全停止未能下发必须显著记录，不得静默。
+                self.session.write("safe_stop_failed", {"reason": str(exc), "stage": "send_command"})
+            else:
                 self._dispatch("communication_lost", {"error": str(exc)})
             return False
         try:
@@ -206,7 +215,9 @@ class LiveRuntime:
             self.session.write("controller_error", {"action": action.name, "error": str(exc)})
             self.current_action = None
             self.last_pending_id = None
-            if action.name != "safe_stop":
+            if action.name == "safe_stop":
+                self.session.write("safe_stop_failed", {"reason": str(exc), "stage": "write"})
+            else:
                 self._dispatch("communication_lost", {"error": str(exc)})
             return False
         self.current_action = action
