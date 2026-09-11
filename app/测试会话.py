@@ -35,7 +35,7 @@ class TestSession:
         self.counts["frames"] += 1
         self.counts["dropped_frames"] += int(dropped)
         self.counts["targets_seen"] += int(target_count > 0)
-        self.counts["elapsed_ms_total"] += elapsed_ms
+        self.counts["elapsed_ms_total"] += elapsed_ms  # pyright: ignore[reportArgumentType]
         for color in colors or []:
             self.counts[f"targets_{color}"] += 1
 

@@ -4,9 +4,13 @@ After=network.target
 
 [Service]
 Type=simple
+# 按现场账号修改；勿在多人共用机上硬编码错误用户
 User=pi
+# 部署时将仓库同步到此目录，或修改为实际路径
 WorkingDirectory=/opt/vision-module
 ExecStart=/bin/bash /opt/vision-module/scripts/启动视觉仿真.sh
+# 仿真模式正常跑完会 exit 0，不会触发 Restart=on-failure 重启。
+# 若比赛需要循环跑任务，请改用循环入口或 Restart=always（另议，勿直接改本文件语义而不评审）。
 Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

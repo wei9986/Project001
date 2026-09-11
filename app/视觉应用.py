@@ -29,11 +29,12 @@ class ApplicationConfig:
 
 
 class ActionLogger:
-    """将状态机动作逐行写入 JSONL 日志。"""
+    """将状态机动作逐行写入 JSONL 日志（持有文件句柄，避免每帧重复打开）。"""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("a", encoding="utf-8")
 
     def write(self, action: MissionAction, state: MissionState, now_ms: float) -> None:
         """追加一条动作日志，不覆盖旧记录。"""
@@ -43,8 +44,13 @@ class ActionLogger:
             "action": action.name,
             "data": action.data,
         }
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        """关闭日志文件；重复调用是安全的。"""
+        if not self._file.closed:
+            self._file.close()
 
 
 def load_simulation_scan(path: Path) -> ScanResult:
@@ -94,34 +100,36 @@ class SimulationRunner:
 
     def run(self) -> MissionState:
         """执行完整仿真；流程卡住时直接报错。"""
-
-        self._handle("start")
-        self.now_ms += 1.0
-        self._handle("self_test_ok")
-        self.now_ms += 1.0
-        pending_actions = self._handle("task_scanned", {"scan": load_simulation_scan(self.config.task_path)})
-
-        # 根据状态机返回的动作生成确认事件，保证仿真流程与真实流程一致。
-        event_by_action: Dict[str, str] = {
-            "load_first_material": "material_loaded",
-            "place_ring": "ring_placed",
-            "load_second_material": "material_loaded",
-            "assemble_material": "assembly_done",
-            "return_home": "home_confirmed",
-        }
-        while self.machine.state not in (MissionState.COMPLETE, MissionState.FAILED):
-            if not pending_actions:
-                # 状态机正在等待确认事件；查看最后一条动作日志即可定位卡点。
-                raise RuntimeError(f"仿真流程没有可确认的动作，当前状态：{self.machine.state.value}")
-            next_event = event_by_action.get(pending_actions[-1].name)
-            if next_event is None:
-                raise RuntimeError(f"仿真器不支持动作：{pending_actions[-1].name}")
+        try:
+            self._handle("start")
             self.now_ms += 1.0
-            pending_actions = self._handle(next_event)
+            self._handle("self_test_ok")
+            self.now_ms += 1.0
+            pending_actions = self._handle("task_scanned", {"scan": load_simulation_scan(self.config.task_path)})
 
-        if self.machine.state != MissionState.COMPLETE:
-            raise RuntimeError(f"仿真任务未完成，最终状态：{self.machine.state.value}")
-        return self.machine.state
+            # 根据状态机返回的动作生成确认事件，保证仿真流程与真实流程一致。
+            event_by_action: Dict[str, str] = {
+                "load_first_material": "material_loaded",
+                "place_ring": "ring_placed",
+                "load_second_material": "material_loaded",
+                "assemble_material": "assembly_done",
+                "return_home": "home_confirmed",
+            }
+            while self.machine.state not in (MissionState.COMPLETE, MissionState.FAILED):
+                if not pending_actions:
+                    # 状态机正在等待确认事件；查看最后一条动作日志即可定位卡点。
+                    raise RuntimeError(f"仿真流程没有可确认的动作，当前状态：{self.machine.state.value}")
+                next_event = event_by_action.get(pending_actions[-1].name)
+                if next_event is None:
+                    raise RuntimeError(f"仿真器不支持动作：{pending_actions[-1].name}")
+                self.now_ms += 1.0
+                pending_actions = self._handle(next_event)
+
+            if self.machine.state != MissionState.COMPLETE:
+                raise RuntimeError(f"仿真任务未完成，最终状态：{self.machine.state.value}")
+            return self.machine.state
+        finally:
+            self.action_logger.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -163,8 +171,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     session = TestSession(args.test_root, args.session_name, {
         "mode": "live", "config_path": str(args.live_config), "colors": live_config.get("colors", []),
     })
-    runtime = LiveRuntime(config, live_config, session)
+    runtime = None
     try:
+        runtime = LiveRuntime(config, live_config, session)
         state = runtime.run(args.max_runtime_s)
         print(json.dumps({"mode": "live", "state": state.value, "session": str(session.directory)}, ensure_ascii=False))
         return 0 if state.value == "complete" else 1
@@ -172,11 +181,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         session.write("fatal_error", {"error": str(exc)})
         raise
     finally:
-        session.close(runtime.machine.state.value, {"camera": runtime.camera.metrics(),
-                                                    "controller_reconnects": runtime.controller.reconnects,
-                                                    "scanner_mode": runtime.scanner_mode,
-                                                    "scanner_reconnects": runtime.scanner.transport.reconnects
-                                                    if runtime.scanner is not None else 0})
+        if runtime is not None:
+            session.close(runtime.machine.state.value, {"camera": runtime.camera.metrics(),
+                                                        "controller_reconnects": runtime.controller.reconnects,
+                                                        "scanner_mode": runtime.scanner_mode,
+                                                        "scanner_reconnects": runtime.scanner.transport.reconnects
+                                                        if runtime.scanner is not None else 0})
+        else:
+            session.close("startup_failed", {"camera": {}, "controller_reconnects": 0,
+                                             "scanner_mode": live_config["scanner"].get("mode"),
+                                             "scanner_reconnects": 0})
 
 
 if __name__ == "__main__":

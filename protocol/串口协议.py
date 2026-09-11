@@ -41,6 +41,30 @@ HEADER = b"\xAA\x55"
 TAIL = b"\x0D\x0A"
 MAX_PAYLOAD = 255
 
+# 统一动作 -> 命令映射（全项目唯一权威来源）。
+# 任务级动作：任务状态机（mission/任务状态机.py）输出，实机运行（app/实机运行.py）与
+# 协议仿真（protocol/协议仿真.py）共用，保证仿真与实机行为一致。
+# 视觉级动作：视觉任务状态机（mission/视觉任务状态机.py）输出，用于单目标搜索-抓放闭环。
+ACTION_TYPES = {
+    # 任务级
+    "self_test": MessageType.PING,
+    "load_first_material": MessageType.PICK,
+    "load_second_material": MessageType.PICK,
+    "place_ring": MessageType.PLACE_RING,
+    "assemble_material": MessageType.ASSEMBLE,
+    "return_home": MessageType.HOME,
+    "recover": MessageType.RECOVER,
+    "safe_stop": MessageType.STOP,
+    # 视觉级
+    "search_target": MessageType.SEARCH_TARGET,
+    "approach_target": MessageType.APPROACH_TARGET,
+    "request_fine_localization": MessageType.FINE_LOCALIZE,
+    "grasp": MessageType.GRASP,
+    "verify_grasp": MessageType.VERIFY_GRASP,
+    "place_target": MessageType.PLACE,
+    "verify_place": MessageType.VERIFY_PLACE,
+}
+
 
 def crc16(data: bytes) -> int:
     """计算 CRC-16/IBM 校验值，低字节先发送。"""
@@ -99,23 +123,33 @@ class FrameParser:
             body = packet[2:6 + payload_length]
             received_crc = int.from_bytes(packet[6 + payload_length:8 + payload_length], "little")
             if packet[-2:] != TAIL or crc16(body) != received_crc:
-                del self.buffer[:2]
                 self.invalid_frames += 1
+                # 校验失败说明帧头后的长度字段可能不可信：丢弃第一个字节并从下一个
+                # 帧头位置重新同步，避免固定跳过 total_length 时越过真实帧边界。
+                self._resync()
                 continue
             # 校验协议版本；不兼容版本视为无效帧
             if packet[2] != PROTOCOL_VERSION:
-                del self.buffer[:total_length]
                 self.invalid_frames += 1
+                self._resync()
                 continue
             try:
                 message_type = MessageType(packet[4])
             except ValueError:
-                del self.buffer[:total_length]
                 self.invalid_frames += 1
+                self._resync()
                 continue
             frames.append(Frame(message_type, packet[6:6 + payload_length], packet[2], packet[3]))
             del self.buffer[:total_length]
         return frames
+
+    def _resync(self) -> None:
+        """当前帧头位置不可信时丢弃一个字节，回到循环顶部重新查找帧头。
+
+        逐字节滑动而非直接跳到下一个 HEADER，避免坏帧 payload 内嵌的
+        伪帧头导致误同步。
+        """
+        del self.buffer[:1]
 
 
 def json_payload(value: object) -> bytes:
@@ -147,29 +181,58 @@ class PendingCommand:
 class ProtocolEndpoint:
     """协议状态机：管理序号、心跳、重试和待完成命令。"""
 
-    def __init__(self, heartbeat_interval_ms: float = 100.0, offline_timeout_ms: float = 1000.0,
-                 ack_timeout_ms: float = 5000.0, max_retries: int = 1) -> None:
+    def __init__(
+        self,
+        heartbeat_interval_ms: float = 100.0,
+        offline_timeout_ms: float = 1000.0,
+        ack_timeout_ms: float = 5000.0,
+        done_timeout_ms: float = 15000.0,
+        max_retries: int = 1,
+    ) -> None:
+        if ack_timeout_ms <= 0 or done_timeout_ms <= 0:
+            raise ValueError("ack_timeout_ms 与 done_timeout_ms 必须为正数")
         self.heartbeat_interval_ms = heartbeat_interval_ms
         self.offline_timeout_ms = offline_timeout_ms
         self.ack_timeout_ms = ack_timeout_ms
+        self.done_timeout_ms = done_timeout_ms
         self.max_retries = max_retries
         self.parser = FrameParser()
         self.next_sequence = 1
+        self.next_heartbeat_sequence = 251
         self.last_received_ms: Optional[float] = None
         self.last_heartbeat_sent_ms = -heartbeat_interval_ms
         self.pending: Optional[PendingCommand] = None
         self.last_error: Optional[str] = None  # 上层轮询时读取最近错误
 
     def _allocate_sequence(self) -> int:
-        """循环分配 1 到 255 的命令序号。"""
+        """循环分配 1 到 250 的命令序号。"""
         sequence = self.next_sequence
-        self.next_sequence = 1 if sequence == 255 else sequence + 1
+        self.next_sequence = 1 if sequence >= 250 else sequence + 1
+        return sequence
+
+    def _allocate_heartbeat_sequence(self) -> int:
+        """心跳使用 251..255 独立序号域，与命令序号空间隔离，避免误匹配待完成命令。"""
+        sequence = self.next_heartbeat_sequence
+        self.next_heartbeat_sequence = 251 if sequence >= 255 else sequence + 1
         return sequence
 
     def is_online(self, now_ms: Optional[float] = None) -> bool:
         """检查最近是否收到有效控制器数据。"""
         now = time.monotonic() * 1000 if now_ms is None else now_ms
         return self.last_received_ms is not None and now - self.last_received_ms <= self.offline_timeout_ms
+
+    def fail_pending(self, reason: str, error_code: int = 0x01) -> bool:
+        """将当前未完成命令标为失败，允许立即下发下一条（含 recover/safe_stop）。
+
+        用于串口写失败、状态超时清障等场景；已完成/已失败的 pending 不改动。
+        返回是否实际失效了一条 pending。
+        """
+        if self.pending is None or self.pending.completed or self.pending.failed:
+            return False
+        self.pending.failed = True
+        self.pending.error_code = error_code
+        self.last_error = reason
+        return True
 
     def send_command(self, message_type: MessageType, payload: bytes, now_ms: float) -> bytes:
         """创建一条待完成命令；未 DONE/FAIL 前禁止发送下一条。"""
@@ -179,23 +242,13 @@ class ProtocolEndpoint:
             raise RuntimeError("已有未完成指令，必须等待 DONE 或 FAIL")
         sequence = self._allocate_sequence()
         packet = Frame(message_type, payload, sequence=sequence).encode()
+        # 首阶段 deadline 仅覆盖 ACK 窗口；收到 ACK 后改用 done_timeout_ms。
         self.pending = PendingCommand(sequence, message_type, packet, now_ms + self.ack_timeout_ms)
         return packet
 
     def send_action(self, action_name: str, data: object, now_ms: float) -> Optional[bytes]:
-        """把通用动作映射为串口命令。"""
-        action_types = {
-            "search_target": MessageType.SEARCH_TARGET,
-            "approach_target": MessageType.APPROACH_TARGET,
-            "request_fine_localization": MessageType.FINE_LOCALIZE,
-            "grasp": MessageType.GRASP,
-            "verify_grasp": MessageType.VERIFY_GRASP,
-            "place_target": MessageType.PLACE,
-            "verify_place": MessageType.VERIFY_PLACE,
-            "recover": MessageType.RECOVER,
-            "safe_stop": MessageType.STOP,
-        }
-        message_type = action_types.get(action_name)
+        """把通用动作映射为串口命令，映射表见模块级 ACTION_TYPES。"""
+        message_type = ACTION_TYPES.get(action_name)
         return self.send_command(message_type, json_payload(data), now_ms) if message_type else None
 
     def receive(self, data: bytes, now_ms: float) -> List[Frame]:
@@ -207,6 +260,8 @@ class ProtocolEndpoint:
                 continue
             if frame.message_type == MessageType.ACK:
                 self.pending.acknowledged = True
+                # ACK 后切换到 DONE 等待窗口，不再用 ACK 超时驱动重发。
+                self.pending.deadline_ms = now_ms + self.done_timeout_ms
             elif frame.message_type == MessageType.DONE:
                 if self.pending.acknowledged:
                     self.pending.completed = True
@@ -219,18 +274,27 @@ class ProtocolEndpoint:
         return frames
 
     def poll(self, now_ms: float) -> List[bytes]:
-        """生成到期心跳和重发数据包。"""
+        """生成到期心跳；未 ACK 超时可重发，已 ACK 超时只失败不重发。"""
         output: List[bytes] = []
         if now_ms - self.last_heartbeat_sent_ms >= self.heartbeat_interval_ms:
-            output.append(Frame(MessageType.HEARTBEAT, sequence=self._allocate_sequence()).encode())
+            output.append(Frame(MessageType.HEARTBEAT, sequence=self._allocate_heartbeat_sequence()).encode())
             self.last_heartbeat_sent_ms = now_ms
-        if self.pending is not None and not self.pending.completed and not self.pending.failed and now_ms >= self.pending.deadline_ms:
-            if self.pending.retries < self.max_retries:
-                self.pending.retries += 1
-                self.pending.deadline_ms = now_ms + self.ack_timeout_ms
-                output.append(self.pending.packet)
+        pending = self.pending
+        if pending is None or pending.completed or pending.failed or now_ms < pending.deadline_ms:
+            return output
+        if not pending.acknowledged:
+            # 仅未收到 ACK 时重发；避免物理动作被重复执行。
+            if pending.retries < self.max_retries:
+                pending.retries += 1
+                pending.deadline_ms = now_ms + self.ack_timeout_ms
+                output.append(pending.packet)
             else:
-                self.pending.failed = True
-                self.pending.error_code = 0x01
+                pending.failed = True
+                pending.error_code = 0x01
                 self.last_error = "communication_lost"
+        else:
+            # 已 ACK：超时视为动作执行超时，不重发同包。
+            pending.failed = True
+            pending.error_code = 0x02
+            self.last_error = "action_timeout"
         return output

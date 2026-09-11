@@ -43,7 +43,7 @@ class Stage2Tests(unittest.TestCase):
         monitor = SafetyMonitor(minimum_tof_mm=80)
         self.assertFalse(monitor.check("approach_target", VirtualSensors(tof_distance_mm=50)).allowed)
         self.assertFalse(monitor.check("approach_target", VirtualSensors(limit_triggered=True)).allowed)
-        self.assertFalse(monitor.check("assemble_material", VirtualSensors()).allowed)
+        self.assertFalse(monitor.check("assemble_material", VirtualSensors(grasp_confirmed=False)).allowed)
         self.assertTrue(monitor.check("approach_target", VirtualSensors(tof_distance_mm=100)).allowed)
 
     def test_integrated_runtime_connects_vision_scanner_and_mission(self):
@@ -64,7 +64,9 @@ class Stage2Tests(unittest.TestCase):
         marker = cv2.aruco.generateImageMarker(dictionary, 1, 160)
         image = np.full((240, 240), 255, dtype=np.uint8)
         image[40:200, 40:200] = marker
-        detector = AprilTagStationDetector({1: "material_area"}, tag_size_mm=40)
+        detector = AprilTagStationDetector.from_config(
+            path=Path(__file__).resolve().parents[1] / "config" / "站点标签.json"
+        )
         detections = detector.detect(image)
         self.assertEqual(len(detections), 1)
         self.assertEqual(detections[0].station_id, "material_area")
@@ -84,9 +86,9 @@ class Stage2Tests(unittest.TestCase):
         self.assertEqual(scanner.read(), scan)
         self.assertIsNone(scanner.read())
 
-        sensors = VirtualSensors(tof_distance_mm=120.0, grasp_confirmed=True)
+        sensors = VirtualSensors(tof_distance_mm=120.0, grasp_confirmed=None)
         self.assertEqual(sensors.safety_snapshot()["tof_distance_mm"], 120.0)
-        self.assertTrue(sensors.safety_snapshot()["grasp_confirmed"])
+        self.assertIsNone(sensors.safety_snapshot()["grasp_confirmed"])
 
         left, right = create_memory_link()
         packet = Frame(MessageType.PING, b"test", sequence=7).encode()
@@ -110,17 +112,25 @@ class Stage2Tests(unittest.TestCase):
         self.assertEqual(endpoint.pending.error_code, 0x21)
 
     def test_protocol_action_bridge_retries_when_done_is_dropped(self):
+        """已 ACK 后 DONE 丢失：到期标记 action_timeout，且不再重发同包（P1-3）。"""
         pi_transport, stm32_transport = create_memory_link()
-        endpoint = ProtocolEndpoint(ack_timeout_ms=10, max_retries=1)
+        endpoint = ProtocolEndpoint(
+            heartbeat_interval_ms=10_000,
+            ack_timeout_ms=10,
+            done_timeout_ms=20,
+            max_retries=1,
+        )
         bridge = ProtocolActionBridge(endpoint, pi_transport, stm32_transport)
         controller = VirtualStm32(ControllerBehavior.DROP_DONE)
         bridge.send_action("return_home", b"{}", 0.0)
         bridge.exchange(controller, 1.0)
         self.assertTrue(endpoint.pending.acknowledged)
         self.assertFalse(endpoint.pending.completed)
-        retry_packets = endpoint.poll(11.0)
-        self.assertEqual(len(retry_packets), 2)  # heartbeat plus one retry
-
+        endpoint.last_heartbeat_sent_ms = 30.0  # 抑制心跳，只断言业务包不重发
+        retry_packets = endpoint.poll(30.0)
+        self.assertTrue(endpoint.pending.failed)
+        self.assertEqual(endpoint.last_error, "action_timeout")
+        self.assertEqual(retry_packets, [])
     def test_application_simulation_completes_and_writes_action_log(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "application.jsonl"
@@ -186,7 +196,10 @@ class Stage2Tests(unittest.TestCase):
         self.assertFalse(endpoint.is_online(111))
 
     def test_fine_localization_rejects_jump_and_confirms_stable_mean(self):
-        localizer = FineLocalizer(required_samples=3, max_spread_mm=2, max_step_mm=20, target_id=7)
+        fine_path = Path(__file__).resolve().parents[1] / "config" / "精定位配置.json"
+        localizer = FineLocalizer.from_config(
+            path=fine_path, target_id=7, required_samples=3, max_spread_mm=2, max_step_mm=20
+        )
         localizer.reset(0)
         self.assertEqual(localizer.update_from_target(self.target(100, 200), 10).status, LocalizationStatus.COLLECTING)
         self.assertEqual(localizer.update_from_target(self.target(130, 200), 20).status, LocalizationStatus.JUMP_REJECTED)
@@ -197,8 +210,31 @@ class Stage2Tests(unittest.TestCase):
         self.assertEqual(result.status, LocalizationStatus.STABLE)
         self.assertEqual(result.coordinate_mm, (100.5, 200.5))
 
+    def test_fine_localization_timeout_requires_reset_by_default(self):
+        localizer = FineLocalizer(target_id=7, timeout_ms=20)
+        localizer.reset(0)
+        timeout = localizer.update({"targets": []}, 30)
+        self.assertEqual(timeout.status, LocalizationStatus.TIMEOUT)
+        self.assertTrue(timeout.needs_reset)
+        still_timeout = localizer.update({"targets": [self.target()]}, 40)
+        self.assertEqual(still_timeout.status, LocalizationStatus.TIMEOUT)
+        self.assertTrue(still_timeout.needs_reset)
+        localizer.reset(40)
+        self.assertEqual(localizer.update_from_target(self.target(), 41).status, LocalizationStatus.COLLECTING)
+
+    def test_fine_localization_jump_starts_new_sample_sequence(self):
+        localizer = FineLocalizer(target_id=7, required_samples=3, max_step_mm=10)
+        localizer.reset(0)
+        localizer.update_from_target(self.target(100, 100), 1)
+        jumped = localizer.update_from_target(self.target(130, 100), 2)
+        self.assertEqual(jumped.status, LocalizationStatus.JUMP_REJECTED)
+        self.assertEqual(jumped.sample_count, 1)
+
     def test_state_machine_completes_one_task_and_recovers_on_timeout(self):
-        localizer = FineLocalizer(required_samples=2, max_spread_mm=2, max_step_mm=20, target_id=7)
+        fine_path = Path(__file__).resolve().parents[1] / "config" / "精定位配置.json"
+        localizer = FineLocalizer.from_config(
+            path=fine_path, target_id=7, required_samples=2, max_spread_mm=2, max_step_mm=20
+        )
         machine = TaskStateMachine(localizer, state_timeout_ms=100, max_recovery_attempts=1)
         self.assertEqual(machine.handle(TaskEvent("start"), 0)[0].name, "search_target")
         self.assertEqual(machine.state, TaskState.SEARCHING)

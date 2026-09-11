@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 视觉仿真启动脚本（POSIX / 树莓派）
+# Windows 开发机请设置：PYTHON_BIN="..\..\.venv\Scripts\python.exe" 或使用上级 .venv\Scripts\python.exe
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

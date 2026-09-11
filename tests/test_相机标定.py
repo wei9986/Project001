@@ -25,11 +25,13 @@ class CameraCalibrationTests(unittest.TestCase):
 
     def test_save_and_load_preserves_mapping(self):
         calibration = self.make_calibration()
+        calibration.valid_image_count = 4
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "camera.json")
             calibration.save(path)
             loaded = CameraCalibration.from_file(path)
             self.assertEqual(loaded.image_size, (500, 300))
+            self.assertEqual(loaded.valid_image_count, 4)
             self.assertEqual(loaded.pixel_to_world((30, 40)), (70.0, 100.0))
 
     def test_tracker_emits_unified_world_coordinate_interface(self):

@@ -1,4 +1,5 @@
 {
+  "_comment": "barcode_mapping 当前未接入主流程（见 docs/检测路径说明.md）；stations 为实机导航坐标，禁止全 0 上实机。",
   "barcode_mapping": {
     "1": [0.0, 0.0],
     "2": [100.0, 0.0],

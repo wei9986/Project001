@@ -1,0 +1,8 @@
+# 可选：YOLO / 形状识别（主路径未使用）
+# 树莓派部署建议安装本文件以锁定兼容版本；开发机可用 requirements.txt。
+numpy>=1.26,<2.6
+opencv-contrib-python>=4.8,<5.1
+pyserial>=3.5,<4
+Pillow>=10,<12
+PySide6>=6.5,<7
+# ultralytics  # 可选；主路径未引用，需要时再取消注释

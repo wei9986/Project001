@@ -11,16 +11,22 @@ if TYPE_CHECKING:
 
 
 class RuntimeSnapshotLogger:
-    """每轮追加一条 JSON 状态记录。"""
+    """每轮追加一条 JSON 状态记录（持有文件句柄，避免每帧重复打开）。"""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("a", encoding="utf-8")
 
     def write(self, snapshot: "RuntimeSnapshot") -> None:
         """写入用于排查问题的公开状态字段。"""
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(snapshot.__dict__, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._file.write(json.dumps(snapshot.__dict__, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        """关闭日志文件；重复调用是安全的。"""
+        if not self._file.closed:
+            self._file.close()
 
 
 def summarize_snapshots(snapshots: Iterable["RuntimeSnapshot"]) -> Dict[str, object]:

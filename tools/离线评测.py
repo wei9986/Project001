@@ -18,6 +18,7 @@ from mission.扫码读取 import ScanResult, ScanType
 from protocol.串口协议 import ProtocolEndpoint
 from protocol.协议仿真 import ProtocolActionBridge
 from protocol.传输通道 import create_memory_link
+from vision.配置加载 import project_root
 
 
 @dataclass(frozen=True)
@@ -31,12 +32,15 @@ class ScenarioResult:
 
 def _runtime(config: ApplicationConfig, frames: List[np.ndarray], scanner: VirtualScanner) -> RuntimeLoop:
     """使用指定画面和扫码器创建可重复运行环境。"""
+    root = project_root()
     return RuntimeLoop(
         config=config,
         camera=VirtualCamera(frames, loop=True),
         scanner=scanner,
         action_logger=ActionLogger(config.log_path),
-        color_config_path=Path(__file__).resolve().parents[1] / "config" / "颜色追踪配置.json",
+        color_config_path=root / "config" / "颜色追踪配置.json",
+        station_config_path=root / "config" / "站点标签.json",
+        color_names=("red",),
     )
 
 
@@ -47,7 +51,7 @@ def evaluate(config: ApplicationConfig) -> List[ScenarioResult]:
 
     normal = _runtime(config, build_demo_frames(), VirtualScanner([task_scan]))
     normal.run()
-    results.append(ScenarioResult("normal", True, "complete", normal.machine.state.value, summarize_snapshots(normal.snapshots)))
+    results.append(ScenarioResult("normal", normal.machine.state.value == "complete", "complete", normal.machine.state.value, summarize_snapshots(normal.snapshots)))
 
     blank = np.full((480, 640, 3), 255, dtype=np.uint8)
     lost_target = _runtime(config, [blank], VirtualScanner([task_scan]))
@@ -69,17 +73,31 @@ def evaluate(config: ApplicationConfig) -> List[ScenarioResult]:
         observed = "timeout"
     results.append(ScenarioResult("apriltag_lost", observed == "timeout", "timeout", observed, {"cycles": tag_lost.cycle}))
 
+    # 无效扫码不再抛异常：状态机在 S1 内重试（默认上限 3 次），超限后进入恢复。
+    # 连续给 3 条无效码，验证系统不崩溃、重试计数正确累积。
     invalid_scan = _runtime(
         config,
         build_demo_frames(),
-        VirtualScanner([ScanResult(ScanType.TASK_QR, "{}", False, "simulation")]),
+        VirtualScanner([
+            ScanResult(ScanType.TASK_QR, "{}", False, "simulation"),
+            ScanResult(ScanType.TASK_QR, "{}", False, "simulation"),
+            ScanResult(ScanType.TASK_QR, "{}", False, "simulation"),
+        ]),
     )
     try:
-        invalid_scan.run(max_cycles=8)
+        invalid_scan.run(max_cycles=12)
         observed = invalid_scan.machine.state.value
-    except (ValueError, KeyError):
-        observed = "invalid_scan"
-    results.append(ScenarioResult("invalid_scan", observed == "invalid_scan", "invalid_scan", observed, {}))
+    except TimeoutError:
+        observed = invalid_scan.machine.state.value
+    results.append(ScenarioResult(
+        "invalid_scan",
+        # 恢复后会清零 scan_retries（P2-4）；以曾进入恢复或仍停在 S1/failed 判定不崩溃。
+        observed in {"S1_read_task", "recovery", "failed"}
+        and (invalid_scan.machine.recovery_attempts >= 1 or invalid_scan.machine.scan_retries >= 3),
+        "retry_without_crash",
+        observed,
+        {"scan_retries": invalid_scan.machine.scan_retries, "recovery_attempts": invalid_scan.machine.recovery_attempts},
+    ))
 
     left, right = create_memory_link()
     left.close()
@@ -99,7 +117,7 @@ def main() -> int:
     """写入评测报告；任一场景失败则返回非零退出码。"""
     parser = argparse.ArgumentParser(description="离线场景评测")
     parser.add_argument("--task", type=Path, default=Path("config/仿真任务.json"))
-    parser.add_argument("--output", type=Path, default=Path("logs/offline_evaluation.json"))
+    parser.add_argument("--output", type=Path, default=Path("reports/offline_evaluation.json"))
     args = parser.parse_args()
     config = ApplicationConfig(args.task, args.output.with_suffix(".actions.jsonl"))
     results = evaluate(config)

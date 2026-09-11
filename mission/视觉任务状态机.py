@@ -95,7 +95,15 @@ class TaskStateMachine:
             if localization.status == LocalizationStatus.STABLE:
                 self._transition(TaskState.GRASPING, now_ms)
                 return self._action("grasp", coordinate_mm=localization.coordinate_mm)
-            if localization.status in (LocalizationStatus.TIMEOUT, LocalizationStatus.LOST, LocalizationStatus.JUMP_REJECTED):
+            if localization.status == LocalizationStatus.JUMP_REJECTED:
+                # P1-9：坐标跳变非终止，继续采集；与 FineLocalizer 语义一致。
+                return [TaskAction("fine_localization_progress", {"localization": localization.to_dict()})]
+            if localization.status in (
+                LocalizationStatus.TIMEOUT,
+                LocalizationStatus.LOST,
+                LocalizationStatus.NO_COORDINATE,
+            ):
+                # 目标无世界坐标（如未完成平面标定）时继续等待无意义，进入恢复流程。
                 return self._recover(now_ms, localization.reason)
             return [TaskAction("fine_localization_progress", {"localization": localization.to_dict()})]
         if self.state == TaskState.GRASPING and event.name == "grasp_done":

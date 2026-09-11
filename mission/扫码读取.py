@@ -30,7 +30,9 @@ class ScanResult:
 class ExternalScannerParser:
     """解析 GM865 或 USB 扫码器的换行数据。"""
 
-    def __init__(self, scan_type: ScanType, max_line_length: int = 128) -> None:
+    def __init__(self, scan_type: ScanType, max_line_length: int = 512) -> None:
+        if max_line_length < 1:
+            raise ValueError("max_line_length 必须为正数")
         self.scan_type = scan_type
         self.max_line_length = max_line_length
         self.buffer = bytearray()

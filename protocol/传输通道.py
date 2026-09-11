@@ -9,12 +9,16 @@ from typing import Optional, Tuple
 class SerialTransport:
     """pyserial 适配器；帧解析仍由串口协议模块负责。"""
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout_s: float = 0.0) -> None:
+    def __init__(self, port: str, baudrate: int = 115200, timeout_s: float = 0.0,
+                 write_timeout_s: Optional[float] = 0.5) -> None:
         if baudrate <= 0 or timeout_s < 0:
             raise ValueError("波特率必须为正数，超时不能为负数")
+        if write_timeout_s is not None and write_timeout_s < 0:
+            raise ValueError("write_timeout_s 不能为负数")
         self.port = port
         self.baudrate = baudrate
         self.timeout_s = timeout_s
+        self.write_timeout_s = write_timeout_s
         self._serial = None
 
     def open(self) -> None:
@@ -25,7 +29,12 @@ class SerialTransport:
             import serial
         except ImportError as exc:
             raise RuntimeError("SerialTransport 需要安装 pyserial") from exc
-        self._serial = serial.Serial(self.port, self.baudrate, timeout=self.timeout_s)
+        self._serial = serial.Serial(
+            self.port,
+            self.baudrate,
+            timeout=self.timeout_s,
+            write_timeout=self.write_timeout_s,
+        )
 
     def close(self) -> None:
         """关闭串口并清空连接句柄。"""

@@ -31,6 +31,7 @@ class CameraCalibration:
     reprojection_error_px: float
     homography: Optional[np.ndarray] = None
     world_unit: str = "mm"
+    valid_image_count: Optional[int] = None
 
     @property
     def has_plane_mapping(self) -> bool:
@@ -64,6 +65,7 @@ class CameraCalibration:
             reprojection_error_px=float(data.get("reprojection_error_px", 0.0)),
             homography=homography,
             world_unit=str(data.get("world_unit", "mm")),
+            valid_image_count=(int(data["valid_image_count"]) if data.get("valid_image_count") is not None else None),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,6 +76,7 @@ class CameraCalibration:
             "reprojection_error_px": self.reprojection_error_px,
             "homography": self.homography.tolist() if self.homography is not None else None,
             "world_unit": self.world_unit,
+            "valid_image_count": self.valid_image_count,
         }
 
     def save(self, path: str) -> None:
@@ -87,7 +90,8 @@ class CameraCalibration:
         height, width = frame.shape[:2]
         if (width, height) != self.image_size:
             raise ValueError(
-                f"输入画面分辨率 {(width, height)} 与标定分辨率 {self.image_size} 不一致"
+                f"输入画面分辨率 {(width, height)} 与标定分辨率 {self.image_size} 不一致；"
+                "请设置摄像头输出分辨率与标定一致，或使用当前分辨率重新标定"
             )
         return cv2.undistort(frame, self.camera_matrix, self.dist_coeffs)
 
@@ -141,7 +145,9 @@ def calibrate_from_images(
     image_size: Optional[Tuple[int, int]] = None
 
     for image_path in image_paths:
-        frame = cv2.imread(str(image_path))
+        path = Path(image_path)
+        raw = np.fromfile(str(path), dtype=np.uint8)
+        frame = cv2.imdecode(raw, cv2.IMREAD_COLOR) if raw.size else None
         if frame is None:
             raise ValueError(f"无法读取标定图像: {image_path}")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -173,6 +179,7 @@ def calibrate_from_images(
         camera_matrix=camera_matrix,
         dist_coeffs=dist_coeffs,
         reprojection_error_px=float(error),
+        valid_image_count=len(object_points),
     )
 
 
@@ -210,7 +217,8 @@ def main() -> None:
         plane_error = calibration.set_plane_mapping(image_points, world_points)
         print(f"平面映射 RMS 误差: {plane_error:.3f} {calibration.world_unit}")
     calibration.save(args.output)
-    print(f"有效标定图像: {len(image_paths)}")
+    valid_count = calibration.valid_image_count if calibration.valid_image_count is not None else len(image_paths)
+    print(f"有效标定图像: {valid_count}")
     print(f"重投影 RMS 误差: {calibration.reprojection_error_px:.3f} px")
     print(f"标定文件已保存: {args.output}")
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -17,6 +16,7 @@ from app.视觉应用 import ActionLogger, ApplicationConfig, load_simulation_sc
 from mission.任务状态机 import MissionAction, MissionEvent, MissionState, MissionStateMachine
 from vision.颜色追踪 import ColorTracker, load_config
 from vision.站点定位 import AprilTagStationDetector, StationDetection
+from vision.配置加载 import project_root, resolve_path
 from app.运行观测 import RuntimeSnapshotLogger
 
 
@@ -77,6 +77,10 @@ class RuntimeLoop:
         status_logger: Optional[RuntimeSnapshotLogger] = None,
         sensors: Any = None,  # duck-typing: 需提供 tof_distance_mm, grasp_confirmed 等属性
         safety_monitor: Optional[SafetyMonitor] = None,
+        color_names: Optional[Sequence[str]] = None,
+        station_config_path: Optional[Path] = None,
+        step_ms: float = 20.0,
+        minimum_tof_mm: float = 80.0,
     ) -> None:
         """连接配置、设备、识别器和日志，不主动打开硬件。
 
@@ -88,15 +92,21 @@ class RuntimeLoop:
         self.scanner = scanner
         self.action_logger = action_logger
         self.status_logger = status_logger
+        self.step_ms = float(step_ms)
         self.machine = MissionStateMachine(config.state_timeout_ms, config.max_recovery_attempts)
-        self.tracker = ColorTracker(("red",), load_config(str(color_config_path)))
-        self.station_detector = AprilTagStationDetector({1: "material_area"})
-        self.sensors = sensors or VirtualSensors(grasp_confirmed=True)
-        self.safety_monitor = safety_monitor or SafetyMonitor()
+        colors = tuple(color_names) if color_names else ("red",)
+        self.tracker = ColorTracker(colors, load_config(str(resolve_path(color_config_path))))
+        station_path = resolve_path(
+            station_config_path or (project_root() / "config" / "站点标签.json")
+        )
+        self.station_detector = AprilTagStationDetector.from_config(path=station_path)
+        self.sensors = sensors or VirtualSensors(grasp_confirmed=None)
+        self.safety_monitor = safety_monitor or SafetyMonitor(minimum_tof_mm=minimum_tof_mm)
         self.cycle = 0
         self.now_ms = 0.0
         self.pending_actions: List[MissionAction] = []
         self.snapshots: List[RuntimeSnapshot] = []
+        self.camera_errors = 0
 
     def _dispatch(self, name: str, data: Optional[Dict[str, Any]] = None) -> List[MissionAction]:
         """向状态机发送事件并记录返回动作。"""
@@ -112,16 +122,66 @@ class RuntimeLoop:
         self.pending_actions = self._dispatch("self_test_ok")
 
     def step(self) -> RuntimeSnapshot:
-        """执行一轮 20 毫秒循环并返回状态快照。"""
+        """执行一轮循环并返回状态快照。"""
         self.cycle += 1
-        self.now_ms += 20.0
+        self.now_ms += self.step_ms
         ok, frame = self.camera.read()
-        if not ok or frame is None:
-            raise RuntimeError("运行时循环读取不到相机帧")
-        _, visual_result = self.tracker.track(frame)
-        stations: List[StationDetection] = self.station_detector.detect(frame)
-        scan = self.scanner.read() if self.machine.state == MissionState.S1_READ_TASK else None
         actions: List[MissionAction] = []
+        target_count = 0
+        station_count = 0
+        scanner_value = None
+        if not ok or frame is None:
+            # P2-11：对齐实机——丢帧记错误并仍 tick，不硬崩整场循环。
+            self.camera_errors += 1
+            tick_actions = self.machine.tick(self.now_ms)
+            for action in tick_actions:
+                self.action_logger.write(action, self.machine.state, self.now_ms)
+            if tick_actions:
+                self.pending_actions = tick_actions
+                actions.extend(tick_actions)
+            snapshot = RuntimeSnapshot(
+                cycle=self.cycle,
+                timestamp_ms=self.now_ms,
+                state=self.machine.state.value,
+                target_count=0,
+                station_count=0,
+                scanner_value=None,
+                actions=[action.name for action in actions],
+            )
+            self.snapshots.append(snapshot)
+            if self.status_logger is not None:
+                self.status_logger.write(snapshot)
+            return snapshot
+        visual_result: Dict[str, Any] = {"targets": []}
+        stations: List[StationDetection] = []
+        try:
+            _, visual_result = self.tracker.track(frame)
+            stations = self.station_detector.detect(frame)
+        except Exception:  # noqa: BLE001 - 对齐 LiveRuntime：单帧视觉异常不得中断整场循环
+            self.camera_errors += 1
+            tick_actions = self.machine.tick(self.now_ms)
+            for action in tick_actions:
+                self.action_logger.write(action, self.machine.state, self.now_ms)
+            if tick_actions:
+                self.pending_actions = tick_actions
+                actions.extend(tick_actions)
+            snapshot = RuntimeSnapshot(
+                cycle=self.cycle,
+                timestamp_ms=self.now_ms,
+                state=self.machine.state.value,
+                target_count=0,
+                station_count=0,
+                scanner_value=None,
+                actions=[action.name for action in actions],
+            )
+            self.snapshots.append(snapshot)
+            if self.status_logger is not None:
+                self.status_logger.write(snapshot)
+            return snapshot
+        scan = self.scanner.read() if self.machine.state == MissionState.S1_READ_TASK else None
+        target_count = len(visual_result.get("targets", []))
+        station_count = len(stations)
+        scanner_value = scan.raw_value if scan is not None else None
 
         if scan is not None:
             self.pending_actions = self._dispatch("task_scanned", {"scan": scan})
@@ -129,7 +189,8 @@ class RuntimeLoop:
         elif self.pending_actions and self.machine.state not in (MissionState.COMPLETE, MissionState.FAILED):
             # 排查顺序：画面 -> 目标 -> 站点 -> 待执行动作 -> 安全判定。
             target_ready = any(target.get("valid") for target in visual_result.get("targets", []))
-            station_ready = bool(stations)
+            # 只有已映射为站点的标签才算“站点就绪”，未配置的干扰标签不得推进状态机。
+            station_ready = any(detection.station_id is not None for detection in stations)
             if target_ready and station_ready:
                 event_name = self.ACTION_EVENTS.get(self.pending_actions[-1].name)
                 if event_name:
@@ -158,9 +219,9 @@ class RuntimeLoop:
             cycle=self.cycle,
             timestamp_ms=self.now_ms,
             state=self.machine.state.value,
-            target_count=len(visual_result.get("targets", [])),
-            station_count=len(stations),
-            scanner_value=scan.raw_value if scan is not None else None,
+            target_count=target_count,
+            station_count=station_count,
+            scanner_value=scanner_value,
             actions=[action.name for action in actions],
         )
         self.snapshots.append(snapshot)
@@ -169,21 +230,41 @@ class RuntimeLoop:
         return snapshot
 
     def run(self, max_cycles: int = 100) -> MissionState:
-        """循环运行到完成；超出轮数时抛出超时错误。"""
+        """循环运行到完成；超出轮数时抛出超时错误。
+
+        说明：本方法的上限是运行级保险（防止死循环吞掉比赛），与状态机 tick()
+        的状态级超时恢复是两层语义——tick 负责单个状态超时后的恢复，run 的
+        max_cycles 是任务整体兜底。调用方应根据需要捕获 TimeoutError 并决定
+        重试或进入人工处理。
+        """
         if max_cycles <= 0:
             raise ValueError("max_cycles 必须为正数")
-        self.start()
-        while self.machine.state not in (MissionState.COMPLETE, MissionState.FAILED):
-            if self.cycle >= max_cycles:
-                raise TimeoutError(f"运行时循环超过最大周期，状态：{self.machine.state.value}")
-            self.step()
-        if self.machine.state != MissionState.COMPLETE:
-            raise RuntimeError(f"任务未完成，状态：{self.machine.state.value}")
-        return self.machine.state
+        try:
+            self.start()
+            while self.machine.state not in (MissionState.COMPLETE, MissionState.FAILED):
+                if self.cycle >= max_cycles:
+                    raise TimeoutError(
+                        f"运行时循环超过最大周期 {max_cycles}，状态：{self.machine.state.value}"
+                        f"，恢复尝试：{self.machine.recovery_attempts}"
+                    )
+                self.step()
+            if self.machine.state != MissionState.COMPLETE:
+                raise RuntimeError(f"任务未完成，状态：{self.machine.state.value}")
+            return self.machine.state
+        finally:
+            # 关闭日志文件句柄，避免临时目录清理或进程退出时句柄泄漏。
+            self.close()
+
+    def close(self) -> None:
+        """关闭运行时持有的日志文件句柄；重复调用是安全的。"""
+        self.action_logger.close()
+        if self.status_logger is not None:
+            self.status_logger.close()
 
 
 def create_simulation_runtime(config: ApplicationConfig) -> RuntimeLoop:
     """创建无硬件、结果固定的集成仿真环境。"""
+    root = project_root()
     scanner = VirtualScanner([load_simulation_scan(config.task_path)])
     camera = VirtualCamera(build_demo_frames())
     return RuntimeLoop(
@@ -191,7 +272,9 @@ def create_simulation_runtime(config: ApplicationConfig) -> RuntimeLoop:
         camera=camera,
         scanner=scanner,
         action_logger=ActionLogger(config.log_path),
-        color_config_path=Path(__file__).resolve().parents[1] / "config" / "颜色追踪配置.json",
+        color_config_path=root / "config" / "颜色追踪配置.json",
+        station_config_path=root / "config" / "站点标签.json",
+        color_names=("red",),
         status_logger=RuntimeSnapshotLogger(config.log_path.with_suffix(".status.jsonl")),
-        sensors=VirtualSensors(tof_distance_mm=120.0, grasp_confirmed=True),
+        sensors=VirtualSensors(tof_distance_mm=120.0, grasp_confirmed=None),
     )

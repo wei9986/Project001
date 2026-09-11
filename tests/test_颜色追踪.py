@@ -49,6 +49,16 @@ class ColorTrackerTests(unittest.TestCase):
         self.assertEqual(lost["colors"]["red"]["valid_targets"], [])
         self.assertEqual(lost["colors"]["red"]["lost_targets"][0]["status"], "lost")
 
+    def test_timeout_marks_existing_tracks_lost(self):
+        self.tracker.track(self.make_frame(second_target=False))
+        self.tracker.track(self.make_frame(second_target=False))
+        self.tracker.config["tracking"]["timeout_ms"] = 0.000001
+        _, result = self.tracker.track(self.make_frame(second_target=False))
+        red = result["colors"]["red"]
+        self.assertTrue(red["timed_out"])
+        self.assertEqual(red["lost_targets"][0]["reason"], "timeout")
+        self.assertGreaterEqual(red["lost_targets"][0]["lost_frames"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

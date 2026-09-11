@@ -46,5 +46,15 @@
     "trail_length": 20,
     "timeout_ms": 50.0,
     "roi": null
+  },
+  "preprocess": {
+    "blur_ksize": 5,
+    "blur_sigma": 0.0
+  },
+  "confidence": {
+    "area_weight": 0.5,
+    "circularity_weight": 0.25,
+    "solidity_weight": 0.25,
+    "area_norm_factor_mul": 4.0
   }
 }

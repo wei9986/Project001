@@ -1,0 +1,60 @@
+{
+  "colors": {
+    "red": {
+      "ranges": [
+        [[0, 100, 100], [10, 255, 255]],
+        [[160, 100, 100], [179, 255, 255]]
+      ],
+      "kernel_size": 5,
+      "open_iterations": 1,
+      "close_iterations": 1,
+      "draw_color": [0, 0, 255]
+    },
+    "green": {
+      "ranges": [[[35, 80, 80], [85, 255, 255]]],
+      "kernel_size": 5,
+      "open_iterations": 1,
+      "close_iterations": 1,
+      "draw_color": [0, 255, 0]
+    },
+    "blue": {
+      "ranges": [[[90, 80, 80], [130, 255, 255]]],
+      "kernel_size": 5,
+      "open_iterations": 1,
+      "close_iterations": 1,
+      "draw_color": [255, 0, 0]
+    },
+    "yellow": {
+      "ranges": [[[20, 100, 100], [35, 255, 255]]],
+      "kernel_size": 5,
+      "open_iterations": 1,
+      "close_iterations": 1,
+      "draw_color": [0, 255, 255]
+    }
+  },
+  "tracking": {
+    "min_area": 500,
+    "max_area": 0,
+    "max_targets_per_color": 8,
+    "confirm_frames": 3,
+    "max_match_distance": 80.0,
+    "max_lost_frames": 5,
+    "min_circularity": 0.0,
+    "min_solidity": 0.0,
+    "min_aspect_ratio": 0.0,
+    "max_aspect_ratio": 0.0,
+    "trail_length": 20,
+    "timeout_ms": 50.0,
+    "roi": null
+  },
+  "preprocess": {
+    "blur_ksize": 5,
+    "blur_sigma": 0.0
+  },
+  "confidence": {
+    "area_weight": 0.5,
+    "circularity_weight": 0.25,
+    "solidity_weight": 0.25,
+    "area_norm_factor_mul": 4.0
+  }
+}

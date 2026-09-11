@@ -78,9 +78,16 @@ class TaskPlan:
             *(MaterialRecord(item, "first") for item in instruction.first_batch),
             *(MaterialRecord(item, "second") for item in instruction.second_batch),
         ]
-        self.ring_codes = {item.ring_code for item in (*instruction.first_batch, *instruction.second_batch)}
-        if len(self.ring_codes) != len(instruction.first_batch) + len(instruction.second_batch):
-            raise ValueError("任务二维码中存在重复 ring_code")
+        # 色环码（1/2/3 对应红/绿/蓝）批次内唯一，且必须落在合法取值域。
+        allowed_ring_codes = {"1", "2", "3"}
+        for batch_name, batch_items in (("first_batch", instruction.first_batch),
+                                        ("second_batch", instruction.second_batch)):
+            batch_codes = [item.ring_code for item in batch_items]
+            for code in batch_codes:
+                if str(code) not in allowed_ring_codes:
+                    raise ValueError(f"任务二维码 {batch_name} 存在非法 ring_code: {code!r}（仅允许 1/2/3）")
+            if len(set(batch_codes)) != len(batch_codes):
+                raise ValueError(f"任务二维码 {batch_name} 中存在重复 ring_code")
         material_ids = [item.material_id for item in (*instruction.first_batch, *instruction.second_batch)]
         if len(set(material_ids)) != len(material_ids):
             raise ValueError("任务二维码中存在重复 material_id")
@@ -105,13 +112,3 @@ class TaskPlan:
             raise ValueError(f"非法物料状态转换: {record.status.value} -> {status.value}")
         record.status = status
         return record
-
-    def all_first_batch_ring_placed(self) -> bool:
-        """检查第一批是否全部完成放环。"""
-        first = [record for record in self.records if record.batch == "first"]
-        return bool(first) and all(record.status == MaterialStatus.RING_PLACED for record in first)
-
-    def all_second_batch_assembled(self) -> bool:
-        """检查第二批是否全部完成装配。"""
-        second = [record for record in self.records if record.batch == "second"]
-        return not second or all(record.status == MaterialStatus.ASSEMBLED for record in second)

@@ -1,28 +1,50 @@
 {
   "camera": {
-    "source": 0,
-    "width": 1280,
-    "height": 720,
+    "source": 1,
+    "width": 640,
+    "height": 480,
     "fps": 30,
     "reconnect_delay_s": 2.0
   },
   "scanner": {
-    "mode": "camera_qr"
+    "mode": "serial",
+    "port": "/dev/ttyUSB0",
+    "baudrate": 9600,
+    "scan_type": "task_qr",
+    "max_line_length": 512,
+    "reconnect_delay_s": 2.0
   },
   "controller": {
     "port": "/dev/ttyUSB1",
-    "baudrate": 115200,
-    "reconnect_delay_s": 2.0
+    "baudrate": 921600,
+    "reconnect_delay_s": 2.0,
+    "write_timeout_s": 0.5
   },
   "protocol": {
     "heartbeat_interval_ms": 100,
     "offline_timeout_ms": 1000,
-    "ack_timeout_ms": 1500,
+    "ack_timeout_ms": 5000,
+    "done_timeout_ms": 15000,
     "max_retries": 1
   },
   "colors": ["red", "green", "blue"],
   "color_config": "config/颜色追踪配置.json",
+  "station_config": "config/站点标签.json",
+  "fine_localization": "config/精定位配置.json",
+  "use_fine_localization": false,
+  "fine_localization_before": ["load_first_material", "load_second_material"],
   "calibration": null,
+  "safety": {
+    "minimum_tof_mm": 80.0
+  },
+  "sensors": {
+    "tof_distance_mm": null,
+    "limit_triggered": false,
+    "grasp_confirmed": null
+  },
+  "loop": {
+    "sleep_s": 0.002
+  },
   "display": false,
   "record_video": "annotated.mp4",
   "archive_error_samples": true,

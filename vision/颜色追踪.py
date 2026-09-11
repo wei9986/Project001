@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-"""颜色追踪：检测、筛选、关联并确认多个彩色目标。调试时依次看原图、掩膜、轮廓和有效目标。"""
+#"""颜色追踪：检测、筛选、关联并确认多个彩色目标。调试时依次看原图、掩膜、轮廓和有效目标。"""
 
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
+import os
 import time
 from collections import deque
+from collections.abc import Sequence as ABCSequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -16,6 +19,7 @@ import cv2
 import numpy as np
 
 from vision.相机标定 import CameraCalibration
+from vision.配置加载 import deep_merge, load_merged_config, normalize_source, resolve_path
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -62,36 +66,166 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_aspect_ratio": 0.0,
         "trail_length": 20,
         "timeout_ms": 50.0,
+        "roi": None,
+    },
+    "preprocess": {
+        "blur_ksize": 5,
+        "blur_sigma": 0.0,
+    },
+    "confidence": {
+        "area_weight": 0.5,
+        "circularity_weight": 0.25,
+        "solidity_weight": 0.25,
+        "area_norm_factor_mul": 4.0,
     },
 }
 
 
 def load_config(path: Optional[str]) -> Dict[str, Any]:
     """读取 JSON 配置，并与安全默认值合并。"""
-    config = json.loads(json.dumps(DEFAULT_CONFIG))
-    if path is None:
-        return config
+    resolved = resolve_path(path) if path else None
+    config = load_merged_config(resolved, DEFAULT_CONFIG)
+    return normalize_color_tracking_config(config)
 
-    with Path(path).open("r", encoding="utf-8") as file:
-        user_config = json.load(file)
 
-    if not isinstance(user_config, dict):
-        raise ValueError("配置文件根节点必须是 JSON 对象")
+def _require_mapping(value: Any, field: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"配置项 {field} 必须是 JSON 对象")
+    return value
 
-    # tracking 做顶层合并；colors 逐色 deep-merge 以避免丢失默认值
-    tracking_values = user_config.get("tracking", {})
-    if not isinstance(tracking_values, dict):
-        raise ValueError("配置项 tracking 必须是 JSON 对象")
-    config["tracking"].update(tracking_values)
 
-    for name, values in user_config.get("colors", {}).items():
-        if not isinstance(values, dict):
-            raise ValueError(f"颜色配置 {name} 必须是 JSON 对象")
-        if name not in config["colors"]:
-            config["colors"][name] = dict(values)
-        else:
-            config["colors"][name].update(values)
-    return config
+def _positive_int(value: Any, field: str, *, minimum: int = 1) -> int:
+    result = int(value)
+    if result < minimum:
+        raise ValueError(f"{field} 必须 >= {minimum}")
+    return result
+
+
+def _non_negative_int(value: Any, field: str) -> int:
+    result = int(value)
+    if result < 0:
+        raise ValueError(f"{field} 必须 >= 0")
+    return result
+
+
+def _non_negative_float(value: Any, field: str) -> float:
+    result = float(value)
+    if result < 0:
+        raise ValueError(f"{field} 必须 >= 0")
+    return result
+
+
+def _positive_float(value: Any, field: str) -> float:
+    result = float(value)
+    if result <= 0:
+        raise ValueError(f"{field} 必须 > 0")
+    return result
+
+
+def _odd_kernel(value: Any, field: str) -> int:
+    result = _positive_int(value, field)
+    return result + 1 if result % 2 == 0 else result
+
+
+def _validate_hsv(values: Any, field: str) -> List[int]:
+    if not isinstance(values, ABCSequence) or isinstance(values, (str, bytes)) or len(values) != 3:
+        raise ValueError(f"{field} 必须是长度为 3 的 HSV 数组")
+    hsv = [int(item) for item in values]
+    if not 0 <= hsv[0] <= 179 or not 0 <= hsv[1] <= 255 or not 0 <= hsv[2] <= 255:
+        raise ValueError(f"{field} 超出 HSV 范围，H=0..179，S/V=0..255")
+    return hsv
+
+
+def _validate_draw_color(values: Any, field: str) -> List[int]:
+    if not isinstance(values, ABCSequence) or isinstance(values, (str, bytes)) or len(values) != 3:
+        raise ValueError(f"{field} 必须是长度为 3 的 BGR 数组")
+    color = [int(item) for item in values]
+    if any(item < 0 or item > 255 for item in color):
+        raise ValueError(f"{field} 每个通道必须在 0..255")
+    return color
+
+
+def _normalize_roi(value: Any, field: str) -> Optional[Tuple[int, int, int, int]]:
+    if value is None:
+        return None
+    if not isinstance(value, ABCSequence) or isinstance(value, (str, bytes)) or len(value) != 4:
+        raise ValueError(f"{field} 必须是 null 或长度为 4 的 [x, y, w, h]")
+    x, y, width, height = (int(item) for item in value)
+    if x < 0 or y < 0 or width <= 0 or height <= 0:
+        raise ValueError(f"{field} 必须非负且宽高大于 0")
+    return x, y, width, height
+
+
+def normalize_color_tracking_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """校验并规范化颜色追踪配置，尽早暴露现场参数错误。"""
+    config = load_merged_config(None, config)
+    colors = _require_mapping(config.get("colors"), "colors")
+    normalized_colors: Dict[str, Any] = {}
+    for name, values in colors.items():
+        color_config = _require_mapping(values, f"colors.{name}")
+        ranges = color_config.get("ranges")
+        if not isinstance(ranges, ABCSequence) or isinstance(ranges, (str, bytes)) or len(ranges) == 0:
+            raise ValueError(f"colors.{name}.ranges 必须是非空 HSV 范围列表")
+        normalized_ranges = []
+        for index, color_range in enumerate(ranges):
+            if (not isinstance(color_range, ABCSequence) or isinstance(color_range, (str, bytes))
+                    or len(color_range) != 2):
+                raise ValueError(f"colors.{name}.ranges[{index}] 必须包含 lower 和 upper")
+            lower = _validate_hsv(color_range[0], f"colors.{name}.ranges[{index}][0]")
+            upper = _validate_hsv(color_range[1], f"colors.{name}.ranges[{index}][1]")
+            if any(lower[channel] > upper[channel] for channel in range(3)):
+                raise ValueError(f"colors.{name}.ranges[{index}] lower 不能大于 upper")
+            normalized_ranges.append([lower, upper])
+        normalized_colors[str(name)] = {
+            **color_config,
+            "ranges": normalized_ranges,
+            "kernel_size": _odd_kernel(color_config.get("kernel_size", 5), f"colors.{name}.kernel_size"),
+            "open_iterations": _non_negative_int(color_config.get("open_iterations", 1), f"colors.{name}.open_iterations"),
+            "close_iterations": _non_negative_int(color_config.get("close_iterations", 1), f"colors.{name}.close_iterations"),
+            "draw_color": _validate_draw_color(color_config.get("draw_color", [255, 255, 255]), f"colors.{name}.draw_color"),
+        }
+
+    tracking = _require_mapping(config.get("tracking"), "tracking")
+    min_area = _non_negative_float(tracking.get("min_area", DEFAULT_CONFIG["tracking"]["min_area"]), "tracking.min_area")
+    max_area = _non_negative_float(tracking.get("max_area", 0), "tracking.max_area")
+    if max_area > 0 and max_area < min_area:
+        raise ValueError("tracking.max_area 为 0 或必须 >= tracking.min_area")
+    min_ratio = _non_negative_float(tracking.get("min_aspect_ratio", 0), "tracking.min_aspect_ratio")
+    max_ratio = _non_negative_float(tracking.get("max_aspect_ratio", 0), "tracking.max_aspect_ratio")
+    if max_ratio > 0 and max_ratio < min_ratio:
+        raise ValueError("tracking.max_aspect_ratio 为 0 或必须 >= tracking.min_aspect_ratio")
+    normalized_tracking = {
+        **tracking,
+        "min_area": min_area,
+        "max_area": max_area,
+        "max_targets_per_color": _positive_int(tracking.get("max_targets_per_color", 8), "tracking.max_targets_per_color"),
+        "confirm_frames": _positive_int(tracking.get("confirm_frames", 3), "tracking.confirm_frames"),
+        "max_match_distance": _positive_float(tracking.get("max_match_distance", 80.0), "tracking.max_match_distance"),
+        "max_lost_frames": _non_negative_int(tracking.get("max_lost_frames", 5), "tracking.max_lost_frames"),
+        "min_circularity": _non_negative_float(tracking.get("min_circularity", 0), "tracking.min_circularity"),
+        "min_solidity": _non_negative_float(tracking.get("min_solidity", 0), "tracking.min_solidity"),
+        "min_aspect_ratio": min_ratio,
+        "max_aspect_ratio": max_ratio,
+        "trail_length": _non_negative_int(tracking.get("trail_length", 20), "tracking.trail_length"),
+        "timeout_ms": _positive_float(tracking.get("timeout_ms", 50.0), "tracking.timeout_ms"),
+        "roi": _normalize_roi(tracking.get("roi"), "tracking.roi"),
+    }
+    preprocess = _require_mapping(config.get("preprocess", DEFAULT_CONFIG["preprocess"]), "preprocess")
+    normalized_preprocess = {
+        **preprocess,
+        "blur_ksize": _odd_kernel(preprocess.get("blur_ksize", 5), "preprocess.blur_ksize"),
+        "blur_sigma": _non_negative_float(preprocess.get("blur_sigma", 0.0), "preprocess.blur_sigma"),
+    }
+    confidence = _require_mapping(config.get("confidence", DEFAULT_CONFIG["confidence"]), "confidence")
+    normalized_confidence = {
+        **confidence,
+        "area_weight": _non_negative_float(confidence.get("area_weight", 0.5), "confidence.area_weight"),
+        "circularity_weight": _non_negative_float(confidence.get("circularity_weight", 0.25), "confidence.circularity_weight"),
+        "solidity_weight": _non_negative_float(confidence.get("solidity_weight", 0.25), "confidence.solidity_weight"),
+        "area_norm_factor_mul": _positive_float(confidence.get("area_norm_factor_mul", 4.0), "confidence.area_norm_factor_mul"),
+    }
+    return {**config, "colors": normalized_colors, "tracking": normalized_tracking,
+            "preprocess": normalized_preprocess, "confidence": normalized_confidence}
 
 def _as_int_tuple(values: Sequence[int]) -> Tuple[int, int, int]:
     return int(values[0]), int(values[1]), int(values[2])
@@ -172,7 +306,7 @@ class ColorTracker:
         logger: Optional[DetectionLogger] = None,
         calibration: Optional[CameraCalibration] = None,
     ):
-        self.config = config or json.loads(json.dumps(DEFAULT_CONFIG))
+        self.config = normalize_color_tracking_config(deep_merge(DEFAULT_CONFIG, config)) if config else load_config(None)
         available = self.config["colors"]
         self.color_names = list(color_names)
         unknown = [name for name in self.color_names if name not in available]
@@ -196,6 +330,14 @@ class ColorTracker:
     def tracking(self) -> Dict[str, Any]:
         return self.config["tracking"]
 
+    @property
+    def preprocess_config(self) -> Dict[str, Any]:
+        return self.config.get("preprocess", DEFAULT_CONFIG["preprocess"])
+
+    @property
+    def confidence_config(self) -> Dict[str, Any]:
+        return self.config.get("confidence", DEFAULT_CONFIG["confidence"])
+
     def validate_roi(self, frame_shape: Sequence[int]) -> None:
         """检查 ROI 是否合法，非法时直接报错。"""
         if self.roi is None:
@@ -209,7 +351,13 @@ class ColorTracker:
 
     def preprocess(self, frame: np.ndarray) -> np.ndarray:
         """执行保守的图像预处理。"""
-        blurred = cv2.GaussianBlur(frame, (5, 5), 0)
+        preprocess = self.preprocess_config
+        ksize = int(preprocess.get("blur_ksize", 5))
+        if ksize % 2 == 0:
+            ksize += 1
+        ksize = max(1, ksize)
+        sigma = float(preprocess.get("blur_sigma", 0.0))
+        blurred = cv2.GaussianBlur(frame, (ksize, ksize), sigma)
         return cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
 
     def apply_roi(self, hsv: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int]]:
@@ -279,15 +427,27 @@ class ColorTracker:
             area, circularity, solidity, width, height, aspect_ratio = measurements
             moments = cv2.moments(contour)
             if moments["m00"] == 0:
+                # 零面积退化轮廓无法计算质心，统一计入被拒绝轮廓数，保持统计口径一致。
+                self.rejected_counts[color_name] += 1
                 continue
             center = (
                 int(moments["m10"] / moments["m00"]) + dx,
                 int(moments["m01"] / moments["m00"]) + dy,
             )
-            (local_x, local_y), radius = cv2.minEnclosingCircle(contour)
+            (_, _), radius = cv2.minEnclosingCircle(contour)
             rect = cv2.minAreaRect(contour)
-            confidence = min(1.0, 0.5 * min(1.0, area / float(self.tracking["min_area"] * 4))
-                             + 0.25 * circularity + 0.25 * solidity)
+            conf = self.confidence_config
+            area_weight = float(conf.get("area_weight", 0.5))
+            circularity_weight = float(conf.get("circularity_weight", 0.25))
+            solidity_weight = float(conf.get("solidity_weight", 0.25))
+            area_norm_mul = float(conf.get("area_norm_factor_mul", 4.0))
+            area_norm = max(float(self.tracking["min_area"]) * area_norm_mul, 1.0)
+            confidence = min(
+                1.0,
+                area_weight * min(1.0, area / area_norm)
+                + circularity_weight * circularity
+                + solidity_weight * solidity,
+            )
             candidates.append(Target(
                 target_id=0,
                 color=color_name,
@@ -308,18 +468,13 @@ class ColorTracker:
         return candidates[:self.max_targets]
 
     def _associate(self, color_name: str, candidates: List[Target]) -> List[Target]:
-        """用最近邻方法保持目标 ID 稳定。"""
+        """用全局最小距离匹配保持目标 ID 稳定。"""
         tracks = self.tracks[color_name]
         max_distance = float(self.tracking["max_match_distance"])
-        unmatched_tracks = set(range(len(tracks)))
         matched_candidates: List[Target] = []
-        for candidate in candidates:
-            best_index = None
-            best_distance = max_distance
-            for index in unmatched_tracks:
-                distance = math.dist(candidate.center, tracks[index].center)
-                if distance <= best_distance:
-                    best_index, best_distance = index, distance
+        matches = self._best_track_matches(tracks, candidates, max_distance)
+        for candidate_index, candidate in enumerate(candidates):
+            best_index = matches.get(candidate_index)
             if best_index is None:
                 track = TrackState(
                     target_id=self.next_target_id,
@@ -331,7 +486,6 @@ class ColorTracker:
                 tracks.append(track)
                 is_new_track = True
             else:
-                unmatched_tracks.remove(best_index)
                 track = tracks[best_index]
                 is_new_track = False
 
@@ -349,6 +503,7 @@ class ColorTracker:
 
         max_lost = int(self.tracking["max_lost_frames"])
         retained_tracks: List[TrackState] = []
+        expired_tracks: List[Dict[str, Any]] = []
         matched_ids = {target.target_id for target in matched_candidates}
         for index, track in enumerate(tracks):
             if track.target_id in matched_ids:
@@ -358,8 +513,76 @@ class ColorTracker:
             track.confirmed = False
             if track.lost_frames <= max_lost:
                 retained_tracks.append(track)
+            else:
+                # P2-3：超限删除时显式输出，供下游感知最终丢失。
+                expired_tracks.append({
+                    "target_id": track.target_id,
+                    "color": track.color,
+                    "lost_frames": track.lost_frames,
+                })
         self.tracks[color_name] = retained_tracks
+        if expired_tracks:
+            # 暂存到实例，由 track() 汇总进结果字典。
+            bucket = getattr(self, "_expired_tracks_buffer", None)
+            if bucket is None:
+                self._expired_tracks_buffer = []
+                bucket = self._expired_tracks_buffer
+            bucket.extend(expired_tracks)
         return matched_candidates
+
+    def _best_track_matches(
+        self, tracks: List[TrackState], candidates: List[Target], max_distance: float
+    ) -> Dict[int, int]:
+        """返回 candidate_index -> track_index 的小规模全局最优匹配。"""
+        if not tracks or not candidates:
+            return {}
+        candidate_count = len(candidates)
+        track_count = len(tracks)
+        # 候选已被 max_targets_per_color（默认 8）截断，min(...) > 8 永远不成立，
+        # 8×8 会走指数穷举（实测 ~500ms/帧）。改用乘积阈值：4×4 以下仍精确，
+        # 更大规模切贪心（P1-5）。
+        if candidate_count * track_count > 16:
+            return self._greedy_track_matches(tracks, candidates, max_distance)
+        best_cost = math.inf
+        best_matches: Dict[int, int] = {}
+        for size in range(min(candidate_count, track_count), 0, -1):
+            for candidate_indexes in itertools.combinations(range(candidate_count), size):
+                for track_indexes in itertools.permutations(range(track_count), size):
+                    cost = 0.0
+                    matches: Dict[int, int] = {}
+                    valid = True
+                    for candidate_index, track_index in zip(candidate_indexes, track_indexes):
+                        distance = math.dist(candidates[candidate_index].center, tracks[track_index].center)
+                        if distance > max_distance:
+                            valid = False
+                            break
+                        cost += distance
+                        matches[candidate_index] = track_index
+                    if valid and cost < best_cost:
+                        best_cost = cost
+                        best_matches = matches
+            if best_matches:
+                return best_matches
+        return {}
+
+    def _greedy_track_matches(
+        self, tracks: List[TrackState], candidates: List[Target], max_distance: float
+    ) -> Dict[int, int]:
+        pairs = sorted(
+            (math.dist(candidate.center, track.center), candidate_index, track_index)
+            for candidate_index, candidate in enumerate(candidates)
+            for track_index, track in enumerate(tracks)
+        )
+        matches: Dict[int, int] = {}
+        used_tracks = set()
+        for distance, candidate_index, track_index in pairs:
+            if distance > max_distance:
+                break
+            if candidate_index in matches or track_index in used_tracks:
+                continue
+            matches[candidate_index] = track_index
+            used_tracks.add(track_index)
+        return matches
 
     def _empty_result(self, status: str) -> Dict[str, Any]:
         return {
@@ -371,13 +594,36 @@ class ColorTracker:
             "timed_out": status == "timeout",
         }
 
-    def _attach_world_coordinates(self, targets: List[Target]) -> None:
+    def _mark_color_timed_out(self, color_name: str) -> Dict[str, Any]:
+        max_lost = int(self.tracking["max_lost_frames"])
+        retained_tracks: List[TrackState] = []
+        lost_targets = []
+        for track in self.tracks[color_name]:
+            track.lost_frames += 1
+            track.confirmed = False
+            lost_targets.append({
+                "target_id": track.target_id,
+                "color": color_name,
+                "center": list(track.center),
+                "status": "lost",
+                "valid": False,
+                "lost_frames": track.lost_frames,
+                "reason": "timeout",
+            })
+            if track.lost_frames <= max_lost:
+                retained_tracks.append(track)
+        self.tracks[color_name] = retained_tracks
+        result = self._empty_result("timeout")
+        result["lost_targets"] = lost_targets
+        return result
+
+    def _attach_world_coordinates(self, targets: List[Target], *, already_undistorted: bool) -> None:
         """仅在映射完整时附加平面世界坐标。"""
         if self.calibration is None or not self.calibration.has_plane_mapping:
             return
         for target in targets:
             target.world_mm = self.calibration.pixel_to_world(
-                target.center, already_undistorted=self.calibration is not None
+                target.center, already_undistorted=already_undistorted
             )
 
     def track(self, frame: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -390,6 +636,7 @@ class ColorTracker:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         elif frame.ndim != 3 or frame.shape[2] != 3:
             raise ValueError(f"frame 必须是 BGR 三通道图像，实际 shape={frame.shape}")
+        frame_is_undistorted = self.calibration is not None
         if self.calibration is not None:
             frame = self.calibration.undistort(frame)
         self.validate_roi(frame.shape)
@@ -407,18 +654,20 @@ class ColorTracker:
             "colors": {},
         }
         timed_out = False
+        timed_out_colors: List[str] = []
         timeout_ms = float(self.tracking["timeout_ms"])
 
         for color_name in self.color_names:
             elapsed_ms = (cv2.getTickCount() - start) / cv2.getTickFrequency() * 1000.0
             if elapsed_ms > timeout_ms:
                 timed_out = True
-                results["colors"][color_name] = self._empty_result("timeout")
+                timed_out_colors.append(color_name)
+                results["colors"][color_name] = self._mark_color_timed_out(color_name)
                 continue
             mask = self.create_mask(roi_hsv, color_name)
             candidates = self._candidate_targets(mask, color_name, offset)
             associated = self._associate(color_name, candidates)
-            self._attach_world_coordinates(associated)
+            self._attach_world_coordinates(associated, already_undistorted=frame_is_undistorted)
             valid = [target for target in associated if target.valid]
             lost = [
                 {
@@ -448,6 +697,10 @@ class ColorTracker:
         results["elapsed_ms"] = round(self.last_elapsed_ms, 3)
         results["fps"] = round(1000.0 / self.last_elapsed_ms, 2) if self.last_elapsed_ms else 0.0
         results["timed_out"] = timed_out
+        results["timed_out_colors"] = timed_out_colors
+        expired = getattr(self, "_expired_tracks_buffer", None) or []
+        results["expired_tracks"] = list(expired)
+        self._expired_tracks_buffer = []
         self._draw_overlay(frame, results)
         self.logger.write(self.frame_index, results)
         return frame, results
@@ -476,13 +729,10 @@ class ColorTracker:
         cv2.putText(frame, text, (10, frame.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
 
-def parse_source(source: str) -> Any:
-    return int(source) if source.isdigit() else source
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="多目标 HSV 颜色检测与跟踪")
-    parser.add_argument("--source", default="0", help="摄像头编号或视频文件路径")
+    parser.add_argument("--source", default=os.environ.get("CAM_SOURCE", "0"),
+                        help="摄像头编号或视频文件路径；可用环境变量 CAM_SOURCE 覆盖默认值（外接头常有别于内置头的编号）")
     parser.add_argument("--config", default=None, help="JSON 配置文件路径")
     parser.add_argument("--colors", nargs="+", default=["red", "green", "blue"], help="要检测的颜色名称")
     parser.add_argument("--roi", type=int, nargs=4, default=None, metavar=("X", "Y", "W", "H"),
@@ -491,6 +741,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-debug", default=None, help="保存带标注视频的路径")
     parser.add_argument("--calibration", default=None, help="相机标定 JSON 文件路径")
     return parser
+
+
+def _open_camera(source: object, *, warm_frames: int = 20) -> cv2.VideoCapture:
+    """打开摄像头并丢弃前若干帧。
+
+    USB 摄像头启动时需要几帧自动曝光/白平衡才会出画面，首帧常是全黑。
+    这里先把这些黑帧丢掉，避免被误判为『摄像头无图像』。
+    """
+    capture = cv2.VideoCapture(normalize_source(source))
+    for _ in range(warm_frames):
+        ok, _ = capture.read()
+        if not ok:
+            break
+    return capture
 
 
 def main() -> None:
@@ -502,7 +766,10 @@ def main() -> None:
     roi = tuple(args.roi) if args.roi else (tuple(configured_roi) if configured_roi else None)
     tracker = ColorTracker(args.colors, config=config, roi=roi,
                            logger=logger, calibration=calibration)
-    capture = cv2.VideoCapture(parse_source(args.source))
+    capture = _open_camera(args.source)
+    if calibration is not None:
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, calibration.image_size[0])
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, calibration.image_size[1])
     if not capture.isOpened():
         logger.close()
         raise RuntimeError(f"无法打开视频源: {args.source}")
@@ -516,12 +783,21 @@ def main() -> None:
             if args.save_debug and writer is None:
                 height, width = annotated.shape[:2]
                 fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
-                writer = cv2.VideoWriter(args.save_debug, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+                writer = cv2.VideoWriter(args.save_debug, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))  # pyright: ignore[reportAttributeAccessIssue]
             if writer is not None:
                 writer.write(annotated)
             cv2.imshow("HSV Multi-target Tracking", annotated)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            # 仅当 --source 是数字摄像头索引时才支持热键切换；视频文件路径无法切换。
+            if key == ord("c") and isinstance(args.source, str) and args.source.isdigit():
+                capture.release()
+                capture = _open_camera(int(args.source) + 1)
+                if writer is not None:
+                    writer.release()
+                    writer = None
+                print(f"已切换到摄像头索引 {int(args.source) + 1}")
     finally:
         capture.release()
         if writer is not None:

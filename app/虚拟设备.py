@@ -38,6 +38,17 @@ class VirtualCamera:
     def close(self) -> None:
         self._opened = False
 
+    def metrics(self) -> dict:
+        return {
+            "source": "virtual",
+            "opened": self._opened,
+            "read_failures": 0,
+            "reconnects": 0,
+            "last_error": None,
+            "index": self._index,
+            "frame_count": len(self._frames),
+        }
+
 
 class VirtualScanner:
     """按队列模拟扫码器，保持 ScanResult 接口。"""
@@ -53,6 +64,9 @@ class VirtualScanner:
         """读取一条扫码结果；无数据时返回 None。"""
         return self._scans.popleft() if self._scans else None
 
+    def close(self) -> None:
+        self._scans.clear()
+
 
 @dataclass
 class VirtualSensors:
@@ -60,7 +74,8 @@ class VirtualSensors:
 
     tof_distance_mm: Optional[float] = None
     limit_triggered: bool = False
-    grasp_confirmed: bool = False
+    # None=未接入（跳过装配检查），与实机 LiveSensors 语义对齐。
+    grasp_confirmed: Optional[bool] = None
 
     def safety_snapshot(self) -> dict:
         """返回便于写日志的传感器快照。"""

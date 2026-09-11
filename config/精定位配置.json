@@ -1,0 +1,7 @@
+{
+  "required_samples": 5,
+  "max_spread_mm": 5.0,
+  "max_step_mm": 30.0,
+  "timeout_ms": 1500.0,
+  "lost_timeout_ms": 300.0
+}

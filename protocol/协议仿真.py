@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import List
 
-from protocol.串口协议 import Frame, FrameParser, MessageType, ProtocolEndpoint
+from protocol.串口协议 import ACTION_TYPES, Frame, FrameParser, MessageType, ProtocolEndpoint
 from protocol.传输通道 import MemoryTransport
 
 
@@ -48,18 +48,13 @@ class VirtualStm32:
 
 
 class ProtocolActionBridge:
-    """把运行层动作转换为协议帧并通过注入通道发送。"""
+    """把运行层动作转换为协议帧并通过注入通道发送。
 
-    ACTION_TYPES = {
-        "self_test": MessageType.PING,
-        "load_first_material": MessageType.APPROACH_TARGET,
-        "place_ring": MessageType.PLACE_RING,
-        "load_second_material": MessageType.APPROACH_TARGET,
-        "assemble_material": MessageType.ASSEMBLE,
-        "return_home": MessageType.HOME,
-        "recover": MessageType.RECOVER,
-        "safe_stop": MessageType.STOP,
-    }
+    动作到命令的映射复用 protocol/串口协议.py 的 ACTION_TYPES（唯一权威来源），
+    与实机运行（app/实机运行.py）保持一致，保证仿真通过的行为与实机下发一致。
+    """
+
+    ACTION_TYPES = ACTION_TYPES
 
     def __init__(self, endpoint: ProtocolEndpoint, transport: MemoryTransport, controller_transport: MemoryTransport) -> None:
         self.endpoint = endpoint

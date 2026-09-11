@@ -24,15 +24,26 @@ def save_config(config: Dict[str, Any], path: str) -> None:
 def update_hsv_range(
     config: Dict[str, Any], color_name: str, range_index: int, values: Tuple[int, int, int, int, int, int]
 ) -> None:
-    """更新一个 HSV 范围，并检查上下限是否合法。"""
+    """更新一个 HSV 范围；越界值按通道 clamp，上下限交叉时自动交换。
+
+    调参滑块是独立 trackbar，用户把 low 拖过 high 或拖出边界很常见，
+    直接抛异常会让工具退出（P1-11）。与 Qt 版 clamp_hsv_pair 行为对齐。
+    """
     if color_name not in config["colors"]:
         raise ValueError(f"未配置颜色: {color_name}")
     ranges = config["colors"][color_name]["ranges"]
     if range_index < 0 or range_index >= len(ranges):
         raise IndexError(f"颜色 {color_name} 没有第 {range_index} 个 HSV 范围")
     h_low, h_high, s_low, s_high, v_low, v_high = (int(value) for value in values)
-    if not (0 <= h_low <= h_high <= 179 and 0 <= s_low <= s_high <= 255 and 0 <= v_low <= v_high <= 255):
-        raise ValueError("HSV 范围必须满足 H:0-179、S/V:0-255，且下限不大于上限")
+
+    def _clamp_pair(low: int, high: int, maximum: int) -> Tuple[int, int]:
+        low = max(0, min(maximum, low))
+        high = max(0, min(maximum, high))
+        return (high, low) if low > high else (low, high)
+
+    h_low, h_high = _clamp_pair(h_low, h_high, 179)
+    s_low, s_high = _clamp_pair(s_low, s_high, 255)
+    v_low, v_high = _clamp_pair(v_low, v_high, 255)
     ranges[range_index] = [[h_low, s_low, v_low], [h_high, s_high, v_high]]
 
 
