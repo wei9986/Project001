@@ -21,6 +21,8 @@
     "write_timeout_s": 0.5
   },
   "protocol": {
+    "format": "packunpack_v1",
+    "module_id": 1,
     "heartbeat_interval_ms": 100,
     "offline_timeout_ms": 1000,
     "ack_timeout_ms": 5000,

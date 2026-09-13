@@ -1,0 +1,238 @@
+树莓派视觉上位机命令大全
+更新：扫码到指定颜色测试已支持2025两组码123+231。
+运行：python -m tools.task_color_test --source 0
+生成二维码：python -m tools.task_color_test --make-qr task_test.png --code 123+231
+详细步骤见同目录《任务码到颜色识别测试.txt》。四组码目前只显示和记录。
+适用阶段：只调试树莓派视觉上位机，暂未接入 STM32
+
+使用方法：用树莓派文本编辑器打开本文件，每次只复制需要执行的命令。
+终端粘贴通常使用 Ctrl+Shift+V。不要把整篇说明一起粘贴执行。
+所有摄像头预览、颜色调试和 Qt 窗口均需在树莓派桌面终端运行。
+同一摄像头每次只运行一个程序，退出当前窗口后再执行下一条。
+安装依赖需要联网；tests/ 未复制时跳过自动化测试。
+
+一、进入项目目录
+
+cd /home/pi/Desktop/Project001-opencv.gcs
+
+二、创建并启用 Python 虚拟环境
+
+如果第一次使用项目，执行：
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-pi.txt
+
+以后每次打开新终端，只需要执行：
+
+cd /home/pi/Desktop/Project001-opencv.gcs
+source .venv/bin/activate
+
+成功后，终端前面会出现 (.venv)。
+
+三、查看项目文件
+
+ls
+find app vision mission protocol config tools -maxdepth 2 -type f
+
+四、查看摄像头设备
+
+ls /dev/video*
+
+五、测试摄像头画面
+
+自动探测摄像头索引 0 到 5：
+
+python -m tools.看摄像头
+
+扩大探测范围到索引 8：
+
+python -m tools.看摄像头 8
+
+点击预览窗口，按 n 或空格切下一台，按 p 切上一台，按 q 退出。
+记下窗口显示的实际摄像头索引，后面作为 --source 的值。
+此工具不支持 --source 或 --help 参数。
+
+六、颜色识别调试
+
+测试红色：
+
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color red
+
+测试绿色：
+
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color green
+
+测试蓝色：
+
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color blue
+
+如果摄像头编号是 1，把命令中的 --source 0 改成 --source 1。
+例如：
+
+python -m tools.参数调试 --source 1 --config config/颜色追踪配置.json --color red
+
+调试时把对应颜色目标放到摄像头前，并缓慢移动目标，观察识别框和中心点是否跟随。
+点击图像窗口，按 s 保存配置，按 q 退出，按 r 重置跟踪状态。
+先备份配置，再调参；未按 s 保存的调整不会写回配置文件。
+红色可能有两段 HSV 范围，调整第二段使用：
+
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color red --range-index 1
+
+同时识别并追踪红、绿、蓝（一个程序打开一台摄像头）：
+
+python -m vision.颜色追踪 --source 0 --config config/颜色追踪配置.json --colors red green blue
+
+保存检测日志和标注视频（重复运行前修改文件名，避免覆盖）：
+
+mkdir -p logs
+python -m vision.颜色追踪 --source 0 --config config/颜色追踪配置.json --colors red green blue --log logs/color_test_01.jsonl --save-debug logs/color_test_01.mp4
+
+观察移动目标、短暂遮挡和重新出现时框及中心点是否稳定。
+这验证的是颜色目标跟踪，不能代表任意物体识别或机械控制闭环。
+
+七、图形化调参
+
+树莓派接显示器并进入桌面后，可以运行：
+
+python -m tools.qt调参
+
+通过 SSH 且没有图形显示支持时，Qt 和参数调试工具都无法显示窗口。
+此时可运行后面的无硬件仿真和自动化测试。
+
+八、软件仿真
+
+运行完整仿真流程：
+
+python -m app.视觉应用 --mode simulation
+
+运行仿真验证：
+
+python -m tools.仿真验证 --frames 30 --timeout-ms 50
+
+仿真不需要摄像头，也不需要 STM32。
+
+离线任务评测（使用项目任务配置，不代表真实摄像头识别效果）：
+
+python -m tools.离线评测
+
+报告默认在 reports/，完整任务仿真日志默认在 logs/。
+
+九、项目检查和自动化测试
+
+运行开发模式检查：
+
+python -m tools.启动检查 --profile simulation
+
+运行全部测试：
+
+python -m unittest discover -s tests -v
+
+编译检查 Python 文件：
+
+python -m compileall -q app mission protocol vision tools tests
+
+十、查看各工具帮助
+
+python -m vision.颜色追踪 --help
+python -m tools.qt调参 --help
+python -m tools.参数调试 --help
+python -m tools.仿真验证 --help
+python -m tools.启动检查 --help
+python -m tools.离线评测 --help
+
+十一、颜色配置备份
+
+备份颜色配置：
+
+cp -i config/颜色追踪配置.json config/颜色追踪配置.backup.json
+
+如果提示是否覆盖旧备份，确认需要替换后才输入 y。
+
+查看配置：
+
+cat config/颜色追踪配置.json
+
+十二、常见问题
+
+1. .venv/bin/activate 不存在：
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+2. 找不到 venv 模块：
+
+sudo apt update
+sudo apt install -y python3-venv python3-pip
+python3 -m venv .venv
+
+3. 摄像头打不开：
+
+ls /dev/video*
+python -m tools.看摄像头
+
+确认其他摄像头程序已退出，再重试。/dev/video* 并不都能用于图像采集。
+
+4. OpenCV 缺少系统库：
+
+sudo apt install -y libgl1 libglib2.0-0
+
+5. 脚本提示权限不足：
+
+chmod +x scripts/*.sh
+
+十三、当前阶段不要运行
+
+下面的命令会尝试连接真实扫码器和 STM32，目前不要运行：
+
+bash scripts/启动视觉实机.sh
+python -m app.视觉应用 --mode live
+python -m tools.启动检查 --profile live
+
+十四、推荐执行顺序
+
+cd /home/pi/Desktop/Project001-opencv.gcs
+source .venv/bin/activate
+python -m tools.看摄像头
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color red
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color green
+python -m tools.参数调试 --source 0 --config config/颜色追踪配置.json --color blue
+python -m tools.仿真验证 --frames 30 --timeout-ms 50
+python -m app.视觉应用 --mode simulation
+python -m unittest discover -s tests -v
+
+退出虚拟环境：
+
+deactivate
+
+十五、相机标定（准备真实棋盘格照片后再执行）
+
+查看参数：
+
+python -m vision.相机标定 --help
+python -m tools.标定验收 --help
+
+先把不同角度的清晰棋盘格照片放在 data/calibration/。
+以下仅为横向 9、纵向 6 个内角点，方格边长 25 毫米的示例。
+必须按实际标定板修改三个数值；内角点数量不是方格数量。
+
+python -m tools.标定验收 --images "data/calibration/*.jpg" --board-width 9 --board-height 6 --square-size 25 --output config/camera_calibration.json
+
+相机内参标定不等于完成工作平面的毫米坐标标定。
+未完成相关标定和验证前，不要开启实机配置中的精定位开关。
+
+十六、更新项目后的检查
+
+先退出正在运行的程序，备份树莓派上调好的 config/ 和标定结果。
+复制更新后的源码，配置应对照合并，不要直接覆盖现场调参结果。
+保留树莓派自己的 .venv/，不要复制 Windows 上的虚拟环境。
+
+cd /home/pi/Desktop/Project001-opencv.gcs
+source .venv/bin/activate
+python -m pip install -r requirements-pi.txt
+python -m tools.启动检查 --profile simulation
+python -m unittest discover -s tests -v
+
+本手册按电脑当前项目源码核对，尚未在你的树莓派上实测。
+如果树莓派仍是旧代码，命令参数以对应工具的 --help 为准（摄像头预览工具除外）。

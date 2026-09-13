@@ -36,10 +36,10 @@ class MessageType(IntEnum):
     QUERY_STATUS = 0x28
 
 
+# PackUnpack 固定 10 字节协议（参考 PackUnpack.c）：模块 ID、帧头、命令 ID、6 字节数据、校验和。
 PROTOCOL_VERSION = 1
-HEADER = b"\xAA\x55"
-TAIL = b"\x0D\x0A"
-MAX_PAYLOAD = 255
+MAX_PAYLOAD = 6
+MODULE_ID = 0x01
 
 # 统一动作 -> 命令映射（全项目唯一权威来源）。
 # 任务级动作：任务状态机（mission/任务状态机.py）输出，实机运行（app/实机运行.py）与
@@ -90,9 +90,17 @@ class Frame:
         if not 0 <= self.version <= 255 or not 0 <= self.sequence <= 255:
             raise ValueError("version 和 sequence 必须在 0..255 范围内")
         if len(self.payload) > MAX_PAYLOAD:
-            raise ValueError("payload 超过 255 字节")
-        body = bytes((self.version, self.sequence, int(self.message_type), len(self.payload))) + self.payload
-        return HEADER + body + crc16(body).to_bytes(2, "little") + TAIL
+            raise ValueError("PackUnpack payload 超过 6 字节")
+        if len(self.payload) > MAX_PAYLOAD - 1:
+            raise ValueError("payload 超过 5 字节（第 1 字节保留给序号）")
+        raw = [int(self.message_type) & 0x7f] + [self.sequence & 0x7f] + list(self.payload.ljust(MAX_PAYLOAD - 1, b"\0"))
+        head = 0x80
+        for i, value in enumerate(raw):
+            bit = (value >> 7) & 1
+            head |= bit << i
+            raw[i] = value | 0x80
+        packet = bytes((MODULE_ID, head, *raw))
+        return packet + bytes(((sum(packet) & 0x7f) | 0x80,))
 
 
 class FrameParser:
@@ -107,7 +115,7 @@ class FrameParser:
         self.buffer.extend(data)
         frames: List[Frame] = []
         while True:
-            start = self.buffer.find(HEADER)
+            start = next((i for i, value in enumerate(self.buffer) if value < 0x80), -1)
             if start < 0:
                 self.buffer = self.buffer[-1:]
                 break
@@ -115,32 +123,27 @@ class FrameParser:
                 del self.buffer[:start]
             if len(self.buffer) < 10:
                 break
-            payload_length = self.buffer[5]
-            total_length = 2 + 4 + payload_length + 2 + 2
-            if len(self.buffer) < total_length:
-                break
-            packet = bytes(self.buffer[:total_length])
-            body = packet[2:6 + payload_length]
-            received_crc = int.from_bytes(packet[6 + payload_length:8 + payload_length], "little")
-            if packet[-2:] != TAIL or crc16(body) != received_crc:
+            packet = bytes(self.buffer[:10])
+            if packet[0] & 0x80 or any((b & 0x80) == 0 for b in packet[1:]):
                 self.invalid_frames += 1
-                # 校验失败说明帧头后的长度字段可能不可信：丢弃第一个字节并从下一个
-                # 帧头位置重新同步，避免固定跳过 total_length 时越过真实帧边界。
-                self._resync()
+                del self.buffer[:1]
                 continue
-            # 校验协议版本；不兼容版本视为无效帧
-            if packet[2] != PROTOCOL_VERSION:
+            if (sum(packet[:9]) & 0x7f) != (packet[9] & 0x7f):
                 self.invalid_frames += 1
-                self._resync()
+                del self.buffer[:1]
                 continue
             try:
-                message_type = MessageType(packet[4])
+                message_type = MessageType(packet[2] & 0x7f)
             except ValueError:
                 self.invalid_frames += 1
                 self._resync()
                 continue
-            frames.append(Frame(message_type, packet[6:6 + payload_length], packet[2], packet[3]))
-            del self.buffer[:total_length]
+            head = packet[1]
+            values = []
+            for i in range(7):
+                values.append((packet[2 + i] & 0x7f) | (((head >> i) & 1) << 7))
+            frames.append(Frame(message_type, bytes(values[2:]), sequence=values[1]))
+            del self.buffer[:10]
         return frames
 
     def _resync(self) -> None:
@@ -155,8 +158,8 @@ class FrameParser:
 def json_payload(value: object) -> bytes:
     """编码紧凑 JSON，并检查 255 字节上限。"""
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    if len(payload) > MAX_PAYLOAD:
-        raise ValueError("JSON payload 超过 255 字节")
+    if len(payload) > MAX_PAYLOAD - 1:
+        raise ValueError("JSON payload 超过 5 字节（第 1 字节保留给序号）")
     return payload
 
 

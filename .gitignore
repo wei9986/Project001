@@ -22,3 +22,7 @@ runs/
 reports/
 test_logs/
 camera_probe_*.png
+
+# 助手工作记忆与本地临时目录（不入库）
+.workbuddy/
+tmp/

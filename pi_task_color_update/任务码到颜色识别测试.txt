@@ -1,0 +1,71 @@
+任务码到指定颜色识别：2025规则备战测试版（非2027规则确认版）
+
+更新 tools/task_color_test.py 到树莓派项目的 tools/ 目录。
+使用已有调好的颜色配置，保留树莓派本地 config/ 参数。
+本工具使用摄像头读取二维码，不连接 STM32，也不会发送抓取命令。
+每次只运行一个摄像头程序。请在树莓派桌面终端逐条执行。
+
+1. 进入项目并启用环境
+cd /home/pi/Desktop/Project001-opencv.gcs
+source .venv/bin/activate
+
+2. 生成测试二维码（也可直接使用更新包里的图片）
+python -m tools.task_color_test --make-qr task_test.png --code 123+231
+
+用文件管理器打开项目中的 task_test.png，打印或在另一块屏幕上显示给摄像头。
+支持2025两组任务码：1红、2绿、3蓝，每批包含三个不同颜色。
+默认123+231：第一批红绿蓝，第二批绿蓝红，共六项。
+仍兼容原有JSON任务。适配仅用于这个独立工具，未修改实机应用的任务协议。
+
+3. 开始扫码及颜色测试
+python -m tools.task_color_test --source 0
+
+摄像头编号不同则修改末尾的 0。
+窗口先显示 SCAN TASK QR，把二维码完整放入画面，保持清晰、光照均匀。
+识别后终端会打印 Order，窗口持续显示两组任务码、当前批次和指定颜色。
+移开二维码，把颜色物料放入画面。
+先放错误颜色：应显示 WAIT，按空格不能跳到下一项。
+放正确颜色：连续确认后显示 READY，出现目标框。
+点击图像窗口，按空格确认本项识别，随后进入下一颜色。
+每次按一下并松开，不要长按；必要时移走上一件物料。
+空格仅表示人工确认本项视觉测试，不表示真实抓取成功。
+每项都需要当前画面存在已确认的目标；目标丢失后不能用旧结果确认。
+重复以上操作直到显示 DONE。按 q 退出。
+多件同色物料不能仅靠颜色判断物料身份，本工具会记录所有当前有效同色目标。
+
+4. 查看测试记录
+ls -t logs/task_color_*.jsonl
+
+用文本编辑器打开最新记录，检查 task_scanned、recognition_confirmed 和 sequence_complete。
+中途按 q 的记录会标注 completed=false，不算完整测试通过。
+日志保留各项颜色、物料编号及目标检测结果，可核对是否严格按顺序。
+
+5. 修改顺序再测
+python -m tools.task_color_test --make-qr task_test.png --code 321+123
+这会替换图片，顺序为蓝绿红、红绿蓝，不修改颜色阈值。
+恢复默认：
+python -m tools.task_color_test --make-qr task_test.png --code 123+231
+旧JSON任务生成方式：
+python -m tools.task_color_test --make-qr legacy_task.png --task config/仿真任务.json
+
+6. 四组码验证
+重启工具，扫描更新包中的 official_task_452_321_254_312.png。
+应显示原文及 UNSUPPORTED，不进入颜色序列，空格不能推进。
+日志记录 unsupported_task_code。随后换123+231码可正常开始测试。
+四组码字段含义未核实，不截取其中两组，也不猜测4、5对应颜色。
+
+7. 文件更新清单
+解压 pi_task_color_update.zip，将包内内容合并到项目目录，保持tools和tests层级。
+替换 tools/task_color_test.py、task_test.png 和本TXT，加入四组码图片。
+tests/test_task_color_test.py 可选，复制后可以运行：
+python -m unittest discover -s tests -p test_task_color_test.py -v
+更新包不包含config、虚拟环境、协议文件，不会覆盖树莓派现场颜色配置。
+
+8. 规则来源
+南京航空航天大学公开的2025年中国大学生工程实践与创新能力大赛
+《“智能+”赛道竞赛命题与运行》第5页“任务编码”。
+https://aao.nuaa.edu.cn/_upload/article/files/02/ff/a4420c074e5999e610a8c98ccc5d/15160774-819f-427c-adfd-a60d7a075a1e.pdf
+这是初期备战依据，不代表已确认2027年规则或已完成比赛全流程。
+
+测试范围：真实扫码、任务格式校验、按任务顺序选择颜色、真实识别及人工确认。
+不包括导航、机械抓取、放置、装配或 STM32 动作确认。
