@@ -100,13 +100,13 @@ class Stage2Tests(unittest.TestCase):
         endpoint = ProtocolEndpoint(ack_timeout_ms=100, max_retries=1)
         bridge = ProtocolActionBridge(endpoint, pi_transport, stm32_transport)
         controller = VirtualStm32(ControllerBehavior.NORMAL)
-        self.assertTrue(bridge.send_action("place_ring", b"{}", 0.0))
+        self.assertTrue(bridge.send_action("PLACE_FROM_SLOT", 0.0, slot=1, color=1, zone=3, ring=1, batch=1))
         bridge.exchange(controller, 1.0)
         self.assertTrue(endpoint.pending.completed)
 
         failing_controller = VirtualStm32(ControllerBehavior.FAIL)
         endpoint.pending = None
-        self.assertTrue(bridge.send_action("place_ring", b"{}", 10.0))
+        self.assertTrue(bridge.send_action("PLACE_FROM_SLOT", 10.0, slot=1, color=1, zone=3, ring=1, batch=1))
         bridge.exchange(failing_controller, 11.0)
         self.assertTrue(endpoint.pending.failed)
         self.assertEqual(endpoint.pending.error_code, 0x21)
@@ -122,7 +122,7 @@ class Stage2Tests(unittest.TestCase):
         )
         bridge = ProtocolActionBridge(endpoint, pi_transport, stm32_transport)
         controller = VirtualStm32(ControllerBehavior.DROP_DONE)
-        bridge.send_action("return_home", b"{}", 0.0)
+        bridge.send_action("HOME", 0.0, zone=5)
         bridge.exchange(controller, 1.0)
         self.assertTrue(endpoint.pending.acknowledged)
         self.assertFalse(endpoint.pending.completed)
@@ -161,7 +161,7 @@ class Stage2Tests(unittest.TestCase):
         parser = FrameParser()
         self.assertEqual(parser.feed(packet[:4]), [])
         frames = parser.feed(packet[4:])
-        self.assertEqual(frames, [Frame(MessageType.GRASP, b"abc")])
+        self.assertEqual(frames, [Frame(MessageType.GRASP, b"abc\x00\x00")])
         corrupted = bytearray(packet)
         corrupted[4] ^= 1
         self.assertEqual(parser.feed(bytes(corrupted)), [])
@@ -176,18 +176,21 @@ class Stage2Tests(unittest.TestCase):
         self.assertEqual(len(endpoint.poll(49)), 0)
         retry = endpoint.poll(50)
         self.assertEqual(len(retry), 1)
-        sequence = command_packet[3]
+        sequence = FrameParser().feed(command_packet)[0].sequence
         endpoint.receive(Frame(MessageType.ACK, sequence=sequence).encode(), 60)
         endpoint.receive(Frame(MessageType.DONE, sequence=sequence).encode(), 70)
         self.assertTrue(endpoint.pending.completed)
 
     def test_task_action_is_encoded_as_protocol_command(self):
+        from protocol.串口协议 import pack_action, unpack_action
+
         endpoint = ProtocolEndpoint()
-        packet = endpoint.send_action("grasp", {"coordinate_mm": [100, 200]}, 0)
+        packet = endpoint.send_action("PICK_TO_SLOT", 0, slot=1, color=1, zone=2, ring=0, batch=1)
+        self.assertEqual(len(packet), 10)
         frame = FrameParser().feed(packet)[0]
-        self.assertEqual(frame.message_type, MessageType.GRASP)
-        self.assertIn(b"coordinate_mm", frame.payload)
-        self.assertIsNone(endpoint.send_action("task_complete", {}, 1))
+        self.assertEqual(frame.message_type, MessageType.PICK_TO_SLOT)
+        self.assertEqual(unpack_action(frame.payload), tuple(pack_action(1, 1, 2, 0, 1)))
+        self.assertIsNone(endpoint.send_action("task_complete", 1))
 
     def test_protocol_online_window_expires(self):
         endpoint = ProtocolEndpoint(offline_timeout_ms=100)
@@ -257,7 +260,8 @@ class Stage2Tests(unittest.TestCase):
         endpoint = ProtocolEndpoint()
         packet = endpoint.send_command(MessageType.GRASP, b"x", 0)
         frame = FrameParser().feed(packet)[0]
-        self.assertEqual((frame.version, frame.sequence, frame.message_type), (1, packet[3], MessageType.GRASP))
+        self.assertEqual((frame.version, frame.sequence, frame.message_type), (1, 1, MessageType.GRASP))
+        self.assertEqual(packet[3] & 0x7F, 1)
         endpoint.receive(Frame(MessageType.FAIL, bytes([7]), sequence=frame.sequence).encode(), 10)
         self.assertTrue(endpoint.pending.failed)
         self.assertEqual(endpoint.pending.error_code, 7)
@@ -287,7 +291,7 @@ class Stage2Tests(unittest.TestCase):
         config_path = Path(__file__).resolve().parents[1] / "config" / "任务配置.json"
         config = TaskRuntimeConfig.from_file(config_path)
         self.assertEqual(config.barcode_mapping["1"], (0.0, 0.0))
-        self.assertEqual(config.stations["finished"].station_id, "finished")
+        self.assertEqual(config.stations["home_a"].station_id, "home_a")
 
     def test_mission_state_machine_processes_two_batches(self):
         qr = ScanResult(ScanType.TASK_QR, '{"task_id":"T1","first_batch":[{"material_id":"F1","color":"red","ring_code":"1"}],"second_batch":[{"material_id":"S1","color":"blue","ring_code":"2"}]}', True, "test")

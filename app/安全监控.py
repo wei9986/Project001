@@ -20,19 +20,26 @@ class SafetyDecision:
     reason: Optional[str] = None
 
 
+ARM_ACTIONS = frozenset({"PICK_TO_SLOT", "PLACE_FROM_SLOT", "STACK_FROM_SLOT"})
+
+
 class SafetyMonitor:
     """执行动作前统一检查安全条件。"""
 
-    def __init__(self, minimum_tof_mm: float = 80.0) -> None:
+    def __init__(self, minimum_tof_mm: float = 80.0, require_arm_range: bool = False) -> None:
         if minimum_tof_mm <= 0:
             raise ValueError("minimum_tof_mm 必须为正数")
         self.minimum_tof_mm = minimum_tof_mm
+        # 比赛伸臂、下降、码垛必须有 ToF 读数。调试仍允许未接入时跳过。
+        self.require_arm_range = require_arm_range
 
     def check(self, action_name: str, sensors: Any) -> SafetyDecision:
         """检查一个待执行动作，返回允许或故障原因。sensors 提供限位/ToF/抓取确认。"""
         if getattr(sensors, "limit_triggered", False):
             return SafetyDecision(False, "limit_triggered", "限位信号已触发")
         tof = getattr(sensors, "tof_distance_mm", None)
+        if self.require_arm_range and action_name in ARM_ACTIONS and tof is None:
+            return SafetyDecision(False, "tof_missing", "伸臂前没有 ToF 读数")
         if tof is not None and tof < self.minimum_tof_mm:
             return SafetyDecision(False, "tof_too_close", "ToF 距离低于安全阈值")
         # 仅当抓取传感器已接入且未确认（False）时拦截装配；

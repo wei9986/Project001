@@ -9,7 +9,7 @@ from mission.扫码读取 import ExternalScannerParser, ScanResult, ScanType, pa
 from mission.任务计划 import TaskPlan
 from mission.任务状态机 import MissionEvent, MissionState, MissionStateMachine
 from mission.视觉任务状态机 import TaskEvent, TaskState, TaskStateMachine
-from protocol.串口协议 import Frame, MessageType, ProtocolEndpoint
+from protocol.串口协议 import Frame, FrameParser, MessageType, ProtocolEndpoint
 from vision.精定位 import FineLocalizer, LocalizationStatus
 
 
@@ -20,7 +20,8 @@ class PlanFix20260804Tests(unittest.TestCase):
         self.assertTrue(endpoint.fail_pending("write_failed"))
         # 失效后可立即下发下一条（含 recover）
         packet = endpoint.send_command(MessageType.RECOVER, b"{}", 1.0)
-        self.assertTrue(packet.startswith(b"\xaa\x55"))
+        self.assertEqual(len(packet), 10)
+        self.assertEqual(FrameParser().feed(packet)[0].message_type, MessageType.RECOVER)
         self.assertEqual(endpoint.pending.message_type, MessageType.RECOVER)
 
     def test_ack_then_timeout_does_not_resend(self):

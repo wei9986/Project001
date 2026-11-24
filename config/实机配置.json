@@ -34,7 +34,14 @@
   "station_config": "config/站点标签.json",
   "fine_localization": "config/精定位配置.json",
   "use_fine_localization": false,
-  "fine_localization_before": ["load_first_material", "load_second_material"],
+  "fine_localization_before": ["PLACE_FROM_SLOT", "PICK_TO_SLOT"],
+  "lane_config": "config/车道.json",
+  "arrival_threshold_mm": null,
+  "obstacle": {
+    "min_confidence": null,
+    "width_tolerance_mm": null,
+    "clearance_mm": null
+  },
   "calibration": null,
   "safety": {
     "minimum_tof_mm": 80.0
@@ -44,8 +51,33 @@
     "limit_triggered": false,
     "grasp_confirmed": null
   },
+  "match_clock": {
+    "still_speed_mm_s": null,
+    "start_window_s": null
+  },
   "loop": {
     "sleep_s": 0.002
+  },
+  "mode": "debug",
+  "sensor_source": "status_frame",
+  "speed_source": "status_frame",
+  "wireless": {
+    "address": null,
+    "baudrate": null,
+    "downlink": true
+  },
+  "start_window_s": null,
+  "start_inputs": {
+    "clock": null,
+    "robot": null,
+    "debounce_ms": null
+  },
+  "depart_policy": "full_batch",
+  "home_station": "home_a",
+  "task_board": {
+    "port": null,
+    "baudrate": null,
+    "display_required": false
   },
   "display": false,
   "record_video": "annotated.mp4",

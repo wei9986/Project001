@@ -111,6 +111,17 @@ class FineLocalizationScenarioTests(unittest.TestCase):
         self.assertEqual(machine.state, TaskState.RECOVERY)
         self.assertTrue(any(action.name == "recover" for action in actions))
 
+    def test_fine_localizer_ignores_a_different_color(self):
+        localizer = FineLocalizer(color="blue")
+        chosen = localizer._select_target({
+            "targets": [
+                {"valid": True, "color": "red", "confidence": 0.99, "world_mm": [1, 1]},
+                {"valid": True, "color": "blue", "confidence": 0.4, "world_mm": [8, 8]},
+            ]
+        })
+        self.assertEqual(chosen["color"], "blue")
+        self.assertIsNone(localizer._select_target({"targets": [{"valid": True, "color": "red", "confidence": 0.99}]}))
+
 
 if __name__ == "__main__":
     unittest.main()

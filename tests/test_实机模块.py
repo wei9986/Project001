@@ -64,8 +64,9 @@ class LiveModuleTests(unittest.TestCase):
 
     def test_live_action_command_mapping_is_explicit(self):
         from app.实机运行 import ACTION_TYPES, DONE_EVENTS
-        self.assertEqual(ACTION_TYPES["load_first_material"], MessageType.PICK)
-        self.assertEqual(ACTION_TYPES["return_home"], MessageType.HOME)
+        self.assertEqual(ACTION_TYPES["PICK_TO_SLOT"], MessageType.PICK_TO_SLOT)
+        self.assertEqual(ACTION_TYPES["HOME"], MessageType.HOME)
+        self.assertNotIn("load_first_material", ACTION_TYPES)
         self.assertEqual(DONE_EVENTS["assemble_material"], "assembly_done")
 
     def test_safety_monitor_blocks_assembly_without_grasp_confirmation(self):

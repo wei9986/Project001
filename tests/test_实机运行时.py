@@ -103,7 +103,6 @@ def _build_runtime(
     controller: Any,
     scanner: Any,
     live_overrides: Optional[dict] = None,
-    sensors_provider: Any = None,
 ) -> LiveRuntime:
     config = ApplicationConfig(task_path=root / "task.json", log_path=root / "actions.jsonl")
     config.task_path.write_text(json.dumps(_task_payload()), encoding="utf-8")
@@ -116,8 +115,6 @@ def _build_runtime(
         controller=controller,
         scanner=scanner,
     )
-    if sensors_provider is not None:
-        runtime.sensor_provider = sensors_provider
     return runtime
 
 

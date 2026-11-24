@@ -82,9 +82,12 @@ class ReviewFixTests(unittest.TestCase):
     def test_action_mapping_is_single_source_of_truth(self):
         from app.实机运行 import ACTION_TYPES as live_action_types
 
-        self.assertEqual(ACTION_TYPES["load_first_material"], MessageType.PICK)
-        self.assertEqual(live_action_types["load_first_material"], MessageType.PICK)
-        self.assertEqual(ProtocolActionBridge.ACTION_TYPES["load_first_material"], MessageType.PICK)
+        self.assertEqual(ACTION_TYPES["PICK_TO_SLOT"], MessageType.PICK_TO_SLOT)
+        self.assertEqual(live_action_types["PICK_TO_SLOT"], MessageType.PICK_TO_SLOT)
+        self.assertEqual(ProtocolActionBridge.ACTION_TYPES["PICK_TO_SLOT"], MessageType.PICK_TO_SLOT)
+        self.assertNotIn("load_first_material", ACTION_TYPES)
+        self.assertNotIn("place_ring", ACTION_TYPES)
+        self.assertNotIn("assemble_material", ACTION_TYPES)
         # 三处映射必须完全一致
         self.assertEqual(live_action_types, ACTION_TYPES)
         self.assertEqual(ProtocolActionBridge.ACTION_TYPES, ACTION_TYPES)
@@ -119,7 +122,7 @@ class ReviewFixTests(unittest.TestCase):
         frames = parser.feed(bytes(corrupt) + good)
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0].message_type, MessageType.GRASP)
-        self.assertEqual(frames[0].payload, b"ok")
+        self.assertEqual(frames[0].payload, b"ok\x00\x00\x00")
         self.assertGreaterEqual(parser.invalid_frames, 1)
 
 

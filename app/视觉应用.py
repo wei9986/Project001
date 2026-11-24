@@ -168,12 +168,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     from app.测试会话 import TestSession
 
     live_config = load_live_config(args.live_config)
+    if live_config.get("mode") == "competition":
+        from tools.启动检查 import run_preflight
+
+        report = run_preflight(profile="competition", live_override=live_config)
+        if not report["passed"]:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1
     session = TestSession(args.test_root, args.session_name, {
         "mode": "live", "config_path": str(args.live_config), "colors": live_config.get("colors", []),
     })
     runtime = None
     try:
         runtime = LiveRuntime(config, live_config, session)
+        # 比赛配置下 run 会先等发令和车上按钮，上电本身不进入自检。
         state = runtime.run(args.max_runtime_s)
         print(json.dumps({"mode": "live", "state": state.value, "session": str(session.directory)}, ensure_ascii=False))
         return 0 if state.value == "complete" else 1

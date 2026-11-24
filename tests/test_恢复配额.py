@@ -348,9 +348,14 @@ class SafeStopPreemptionTests(unittest.TestCase):
                     MissionAction("safe_stop", {"reason": "test"}), message_type.STOP, 1.0
                 )
                 self.assertTrue(ok, "safe_stop 应抢占悬挂 pending 后成功下发")
-                self.assertIn(
-                    int(message_type.STOP),
-                    [pkt[4] for pkt in controller.written],
+                from protocol.串口协议 import FrameParser
+
+                frames = []
+                parser = FrameParser()
+                for pkt in controller.written:
+                    frames.extend(parser.feed(pkt))
+                self.assertTrue(
+                    any(frame.message_type == message_type.STOP for frame in frames),
                     "控制器应实际收到 STOP 帧",
                 )
             finally:

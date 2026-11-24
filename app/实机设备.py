@@ -243,6 +243,61 @@ class LiveSensors:
 
 
 @dataclass
+class DisplayPort:
+    """上部任务牌的显示通道。不占用动作帧的 5 字节，设备自己渲染大字。"""
+
+    def __init__(
+        self,
+        port: Optional[str],
+        *,
+        baudrate: Optional[int] = None,
+        fail: bool = False,
+        transport: Optional[object] = None,
+    ) -> None:
+        self.port = port
+        self.baudrate = baudrate
+        self.fail = fail
+        self.sent: list = []
+        self._transport = transport
+
+    @classmethod
+    def from_config(cls, data: Optional[Dict[str, object]]) -> "DisplayPort":
+        values = data or {}
+        port = values.get("port")
+        baud = values.get("baudrate")
+        return cls(str(port) if port else None, baudrate=int(baud) if isinstance(baud, int) and baud > 0 else None)
+
+    def close(self) -> None:
+        close = getattr(self._transport, "close", None)
+        if callable(close):
+            close()
+        self._transport = None
+
+    def send(self, payload: object) -> bool:
+        if self.fail or not self.port:
+            return False
+        text = payload.text() if hasattr(payload, "text") else str(payload)
+        if self.port == "memory":
+            self.sent.append(payload)
+            return True
+        data = (text if text.endswith("\n") else text + "\n").encode("utf-8")
+        try:
+            if self._transport is None:
+                if self.baudrate is None:
+                    return False
+                from protocol.传输通道 import SerialTransport
+
+                self._transport = SerialTransport(self.port, self.baudrate, write_timeout_s=0.5)
+                self._transport.open()
+            written = int(self._transport.write(data))
+        except (OSError, RuntimeError, TimeoutError, TypeError):
+            return False
+        if written != len(data):
+            return False
+        self.sent.append(payload)
+        return True
+
+
 class PiTelemetry:
     """采集 Pi 可用的基础运行状态；非 Pi 环境会优雅降级。
 
