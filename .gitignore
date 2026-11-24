@@ -25,4 +25,10 @@ camera_probe_*.png
 
 # 助手工作记忆与本地临时目录（不入库）
 .workbuddy/
+.workbuddy-ai/
+.slidep/
 tmp/
+
+# 本地报告项目与树莓派更新包（可重生成，不入库）
+projects/
+pi_*_update.zip
