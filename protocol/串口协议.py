@@ -34,6 +34,17 @@ class MessageType(IntEnum):
     ASSEMBLE = 0x26
     HOME = 0x27
     QUERY_STATUS = 0x28
+    # 初赛动作命令（等 ACK 和 DONE）。坐标和任务码字符串不进这 5 字节。
+    GOTO = 0x30
+    PICK_TO_SLOT = 0x31
+    PLACE_FROM_SLOT = 0x32
+    STACK_FROM_SLOT = 0x33
+    WAYPOINT = 0x34
+    # 主动上报：不等 ACK，序号固定为 REPORT_SEQUENCE，不占用动作序号 1..250。
+    STATUS = 0x40
+    SPEED = 0x41
+    POSITION = 0x42
+    BUTTON = 0x43
 
 
 # PackUnpack 固定 10 字节协议（参考 PackUnpack.c）：模块 ID、帧头、命令 ID、6 字节数据、校验和。
@@ -41,29 +52,45 @@ PROTOCOL_VERSION = 1
 MAX_PAYLOAD = 6
 MODULE_ID = 0x01
 
-# 统一动作 -> 命令映射（全项目唯一权威来源）。
-# 任务级动作：任务状态机（mission/任务状态机.py）输出，实机运行（app/实机运行.py）与
-# 协议仿真（protocol/协议仿真.py）共用，保证仿真与实机行为一致。
-# 视觉级动作：视觉任务状态机（mission/视觉任务状态机.py）输出，用于单目标搜索-抓放闭环。
+# 比赛动作命令（全项目唯一权威来源）。旧任务名和视觉级坐标命令不在这张表里同时有效。
+# 每条命令的业务载荷只有 5 字节，由 pack_action / send_action 填入。
 ACTION_TYPES = {
-    # 任务级
-    "self_test": MessageType.PING,
-    "load_first_material": MessageType.PICK,
-    "load_second_material": MessageType.PICK,
-    "place_ring": MessageType.PLACE_RING,
-    "assemble_material": MessageType.ASSEMBLE,
-    "return_home": MessageType.HOME,
-    "recover": MessageType.RECOVER,
-    "safe_stop": MessageType.STOP,
-    # 视觉级
-    "search_target": MessageType.SEARCH_TARGET,
-    "approach_target": MessageType.APPROACH_TARGET,
-    "request_fine_localization": MessageType.FINE_LOCALIZE,
-    "grasp": MessageType.GRASP,
-    "verify_grasp": MessageType.VERIFY_GRASP,
-    "place_target": MessageType.PLACE,
-    "verify_place": MessageType.VERIFY_PLACE,
+    "PING": MessageType.PING,
+    "GOTO": MessageType.GOTO,
+    "PICK_TO_SLOT": MessageType.PICK_TO_SLOT,
+    "PLACE_FROM_SLOT": MessageType.PLACE_FROM_SLOT,
+    "STACK_FROM_SLOT": MessageType.STACK_FROM_SLOT,
+    "WAYPOINT": MessageType.WAYPOINT,
+    "HOME": MessageType.HOME,
+    "STOP": MessageType.STOP,
 }
+
+# 上报帧类型。receive 见到它们时不匹配 pending。
+REPORT_TYPES = frozenset({MessageType.STATUS, MessageType.SPEED, MessageType.POSITION, MessageType.BUTTON})
+# 与动作序号 1..250、心跳序号 251..255 都隔开。
+REPORT_SEQUENCE = 0
+
+# 区域号。GOTO / HOME 放在数据第 1 字节，其余补 0。
+class ZoneId(IntEnum):
+    NONE = 0
+    QR_VIEW = 1
+    SOURCE = 2
+    COARSE = 3
+    STAGING = 4
+    HOME_A = 5
+    HOME_B = 6
+
+
+# 颜色编号与赛题一致：1 红、2 黄、3 蓝、4 绿、5 黑、6 浅蓝。0 表示本命令不带颜色。
+COLOR_RED = 1
+COLOR_YELLOW = 2
+COLOR_BLUE = 3
+COLOR_GREEN = 4
+COLOR_BLACK = 5
+COLOR_LIGHT_BLUE = 6
+
+GRIPPER_OPEN = 0
+GRIPPER_CLOSED = 1
 
 
 def crc16(data: bytes) -> int:
@@ -89,22 +116,27 @@ class Frame:
         """将已校验的帧编码为发送字节。"""
         if not 0 <= self.version <= 255 or not 0 <= self.sequence <= 255:
             raise ValueError("version 和 sequence 必须在 0..255 范围内")
-        if len(self.payload) > MAX_PAYLOAD:
-            raise ValueError("PackUnpack payload 超过 6 字节")
         if len(self.payload) > MAX_PAYLOAD - 1:
             raise ValueError("payload 超过 5 字节（第 1 字节保留给序号）")
-        raw = [int(self.message_type) & 0x7f] + [self.sequence & 0x7f] + list(self.payload.ljust(MAX_PAYLOAD - 1, b"\0"))
+        # 先保留 bit7，再写入帧头。心跳序号 251..255 依赖这一位，不能先掩成 7 位。
+        fields = [int(self.message_type), int(self.sequence), *self.payload.ljust(MAX_PAYLOAD - 1, b"\0")]
         head = 0x80
-        for i, value in enumerate(raw):
-            bit = (value >> 7) & 1
-            head |= bit << i
-            raw[i] = value | 0x80
+        raw = []
+        for index, value in enumerate(fields):
+            if not 0 <= value <= 255:
+                raise ValueError("帧字段必须在 0..255 范围内")
+            head |= ((value >> 7) & 1) << index
+            raw.append((value & 0x7f) | 0x80)
         packet = bytes((MODULE_ID, head, *raw))
         return packet + bytes(((sum(packet) & 0x7f) | 0x80,))
 
 
 class FrameParser:
-    """增量解析分包、粘包和噪声中的有效帧。"""
+    """增量解析分包、粘包和噪声中的有效帧。
+
+    STATUS / SPEED 与动作帧使用同一 10 字节外形，靠命令号区分。
+    它们不在这里匹配 pending，匹配规则在 ProtocolEndpoint.receive。
+    """
 
     def __init__(self) -> None:
         self.buffer = bytearray()
@@ -164,8 +196,133 @@ def json_payload(value: object) -> bytes:
 
 
 def decode_json_payload(payload: bytes) -> object:
-    """在帧校验通过后解析 JSON 数据。"""
+    """在帧校验通过后解析 JSON 数据。调试工具可用；动作发送路径不再调用。"""
     return json.loads(payload.decode("utf-8"))
+
+
+def _byte(name: str, value: int, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} 必须是整数，实际类型 {type(value).__name__}")
+    if not low <= value <= high:
+        raise ValueError(f"{name} 必须在 {low}..{high}，实际 {value}")
+    return value
+
+
+def pack_action(slot: int, color: int, zone: int, ring: int, batch: int) -> bytes:
+    """把车载位、颜色、区域、环位、批次打成 5 字节。原料区抓取的环位填 0。"""
+    return bytes((
+        _byte("slot", slot, 0, 3),
+        _byte("color", color, 0, 6),
+        _byte("zone", zone, 0, 6),
+        _byte("ring", ring, 0, 3),
+        _byte("batch", batch, 0, 2),
+    ))
+
+
+def pack_prefixed(head: int) -> bytes:
+    """GOTO、HOME、STOP、PING：第 1 字节是编号或原因码，其余补 0。"""
+    return bytes((_byte("head", head, 0, 255), 0, 0, 0, 0))
+
+
+def unpack_action(payload: bytes) -> tuple:
+    """解回五个整数。不足 5 字节时按 0 补齐。"""
+    raw = bytes(payload[:5]).ljust(5, b"\0")
+    return tuple(raw)
+
+
+def pack_status(slot_mask: int, gripper: int, limit_switch: int, tof_mm: int) -> bytes:
+    """STATUS：载位掩码、夹爪、限位、ToF 高字节、ToF 低字节。"""
+    tof = _byte("tof_mm", tof_mm, 0, 0xFFFF)
+    return bytes((
+        _byte("slot_mask", slot_mask, 0, 255),
+        _byte("gripper", gripper, 0, 255),
+        _byte("limit_switch", limit_switch, 0, 255),
+        (tof >> 8) & 0xFF,
+        tof & 0xFF,
+    ))
+
+
+def unpack_status(payload: bytes) -> dict:
+    raw = bytes(payload[:5]).ljust(5, b"\0")
+    return {
+        "slot_mask": raw[0],
+        "gripper": raw[1],
+        "limit": raw[2],
+        "tof_mm": (raw[3] << 8) | raw[4],
+    }
+
+
+def pack_position(x_mm: int, y_mm: int, yaw_deg: float) -> bytes:
+    """POSITION：x、y 为有符号毫米，低字节在前。航向是一字节，0 度与 360 度相同。"""
+    def signed(name: str, value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} 必须是整数")
+        if not -32768 <= value <= 32767:
+            raise ValueError(f"{name} 超出毫米范围")
+        return value & 0xFFFF
+
+    yaw = float(yaw_deg) % 360.0
+    yaw_byte = int(round(yaw * 256.0 / 360.0)) % 256
+    x_raw = signed("x_mm", x_mm)
+    y_raw = signed("y_mm", y_mm)
+    return bytes((x_raw & 0xFF, (x_raw >> 8) & 0xFF, y_raw & 0xFF, (y_raw >> 8) & 0xFF, yaw_byte))
+
+
+def unpack_position(payload: bytes) -> dict:
+    raw = bytes(payload[:5]).ljust(5, b"\0")
+
+    def signed(lo: int, hi: int) -> int:
+        value = lo | (hi << 8)
+        return value - 0x10000 if value >= 0x8000 else value
+
+    return {
+        "x_mm": signed(raw[0], raw[1]),
+        "y_mm": signed(raw[2], raw[3]),
+        "yaw_deg": raw[4] * 360.0 / 256.0,
+    }
+
+
+def pack_waypoint(x_mm: int, y_mm: int, point_index: int) -> bytes:
+    """WAYPOINT：中间点的毫米坐标，以及从 0 起的序号。不包含区域号。"""
+    position = pack_position(x_mm, y_mm, 0.0)
+    if isinstance(point_index, bool) or not isinstance(point_index, int) or not 0 <= point_index <= 255:
+        raise ValueError("point_index 超出序号范围")
+    return bytes((position[0], position[1], position[2], position[3], point_index))
+
+
+def unpack_waypoint(payload: bytes) -> dict:
+    position = unpack_position(payload)
+    raw = bytes(payload[:5]).ljust(5, b"\0")
+    return {"x_mm": position["x_mm"], "y_mm": position["y_mm"], "point_index": raw[4]}
+
+
+def pack_buttons(clock_level: int, robot_level: int) -> bytes:
+    """按键上报：bit0 发令，bit1 车上按钮。不写入 STATUS 的五个字节。"""
+    flags = (_byte("clock_level", clock_level, 0, 1) << 0) | (_byte("robot_level", robot_level, 0, 1) << 1)
+    return bytes((flags, 0, 0, 0, 0))
+
+
+def unpack_buttons(payload: bytes) -> dict:
+    raw = bytes(payload[:1]).ljust(1, b"\0")
+    return {"clock": bool(raw[0] & 0x01), "robot": bool(raw[0] & 0x02)}
+
+
+def pack_speed(speed_mm_s: int) -> bytes:
+    """SPEED：有符号速度，低字节在前，单位 mm/s，其余补 0。"""
+    if isinstance(speed_mm_s, bool) or not isinstance(speed_mm_s, int):
+        raise TypeError(f"speed_mm_s 必须是整数，实际类型 {type(speed_mm_s).__name__}")
+    if not -32768 <= speed_mm_s <= 32767:
+        raise ValueError(f"speed_mm_s 必须在 -32768..32767，实际 {speed_mm_s}")
+    raw = speed_mm_s & 0xFFFF
+    return bytes((raw & 0xFF, (raw >> 8) & 0xFF, 0, 0, 0))
+
+
+def unpack_speed(payload: bytes) -> int:
+    raw = bytes(payload[:2]).ljust(2, b"\0")
+    value = raw[0] | (raw[1] << 8)
+    if value >= 0x8000:
+        value -= 0x10000
+    return value
 
 
 @dataclass
@@ -206,6 +363,11 @@ class ProtocolEndpoint:
         self.last_heartbeat_sent_ms = -heartbeat_interval_ms
         self.pending: Optional[PendingCommand] = None
         self.last_error: Optional[str] = None  # 上层轮询时读取最近错误
+        self.last_status: Optional[dict] = None
+        self.last_buttons: Optional[dict] = None
+        self.last_position: Optional[dict] = None
+        self.last_speed_mm_s: Optional[int] = None
+        self.reports: List[Frame] = []
 
     def _allocate_sequence(self) -> int:
         """循环分配 1 到 250 的命令序号。"""
@@ -249,16 +411,44 @@ class ProtocolEndpoint:
         self.pending = PendingCommand(sequence, message_type, packet, now_ms + self.ack_timeout_ms)
         return packet
 
-    def send_action(self, action_name: str, data: object, now_ms: float) -> Optional[bytes]:
-        """把通用动作映射为串口命令，映射表见模块级 ACTION_TYPES。"""
+    def send_action(
+        self,
+        action_name: str,
+        now_ms: float,
+        slot: int = 0,
+        color: int = 0,
+        zone: int = 0,
+        ring: int = 0,
+        batch: int = 0,
+        reason: int = 0,
+        x_mm: int = 0,
+        y_mm: int = 0,
+        point_index: int = 0,
+    ) -> Optional[bytes]:
+        """发送一条 5 字节动作。不接收字典或 JSON。未知命令返回 None。"""
         message_type = ACTION_TYPES.get(action_name)
-        return self.send_command(message_type, json_payload(data), now_ms) if message_type else None
+        if message_type is None:
+            return None
+        if action_name == "PING":
+            payload = pack_action(0, 0, 0, 0, 0)
+        elif action_name == "WAYPOINT":
+            payload = pack_waypoint(x_mm, y_mm, point_index)
+        elif action_name in ("GOTO", "HOME"):
+            payload = pack_prefixed(zone)
+        elif action_name == "STOP":
+            payload = pack_prefixed(reason)
+        else:
+            payload = pack_action(slot, color, zone, ring, batch)
+        return self.send_command(message_type, payload, now_ms)
 
     def receive(self, data: bytes, now_ms: float) -> List[Frame]:
-        """处理控制器响应，只更新序号匹配的待执行命令。"""
+        """处理控制器响应。上报帧不匹配 pending，直接记入传感器和速度。"""
         frames = self.parser.feed(data)
         for frame in frames:
             self.last_received_ms = now_ms
+            if frame.message_type in REPORT_TYPES:
+                self._take_report(frame)
+                continue
             if self.pending is None or frame.sequence != self.pending.sequence:
                 continue
             if frame.message_type == MessageType.ACK:
@@ -275,6 +465,23 @@ class ProtocolEndpoint:
                 self.pending.failed = True
                 self.pending.error_code = frame.payload[0] if frame.payload else None
         return frames
+
+    def _take_report(self, frame: Frame) -> None:
+        """主动上报不需要 ACK，也不改 pending。"""
+        self.reports.append(frame)
+        if frame.message_type == MessageType.STATUS:
+            self.last_status = unpack_status(frame.payload)
+        elif frame.message_type == MessageType.SPEED:
+            self.last_speed_mm_s = unpack_speed(frame.payload)
+        elif frame.message_type == MessageType.BUTTON:
+            self.last_buttons = unpack_buttons(frame.payload)
+        elif frame.message_type == MessageType.POSITION:
+            self.last_position = unpack_position(frame.payload)
+
+    def take_reports(self) -> List[Frame]:
+        reports = self.reports
+        self.reports = []
+        return reports
 
     def poll(self, now_ms: float) -> List[bytes]:
         """生成到期心跳；未 ACK 超时可重发，已 ACK 超时只失败不重发。"""
