@@ -2,6 +2,7 @@ numpy
 opencv-contrib-python
 pyserial
 # ultralytics：可选，主路径未使用（见 docs/检测路径说明.md）
-ultralytics
+# 安装会连带拉取 torch（数 GB），需要时再取消注释
+# ultralytics
 Pillow
 PySide6

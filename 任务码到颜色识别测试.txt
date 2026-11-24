@@ -1,4 +1,7 @@
 任务码到指定颜色识别：2025规则备战测试版（非2027规则确认版）
+第三阶段增加：目标质量、实时坐标质量状态、视频回放和JSONL摘要。
+第二阶段更新：请优先阅读《第二阶段树莓派操作说明.txt》。界面READY改为LOCKED，WAIT由SEARCHING/LOST代替。
+需同时更新tools/task_color_test.py、tools/target_selection.py、tools/task_color_display.py及config/task_color_test.json。
 
 更新 tools/task_color_test.py 到树莓派项目的 tools/ 目录。
 使用已有调好的颜色配置，保留树莓派本地 config/ 参数。

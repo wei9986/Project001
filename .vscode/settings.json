@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "C:\\Users\\a'su's\\Desktop\\项目资料\\27年 工创赛\\视觉模块开发\\.venv\\Scripts\\python.exe",
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
     "python.terminal.activateEnvironment": true,
     "python.analysis.extraPaths": [
         "${workspaceFolder}"
@@ -14,7 +14,8 @@
     "python.terminal.executeInFileDir": false,
     "terminal.integrated.cwd": "${workspaceFolder}",
     "terminal.integrated.env.windows": {
-        "PYTHONPATH": "${workspaceFolder}"
+        "PYTHONPATH": "${workspaceFolder}",
+        "PYTHONUTF8": "1"
     },
     "files.encoding": "utf8",
     "files.exclude": {
@@ -23,13 +24,13 @@
     },
     "git.scanRepositories": [
         ".",
-        "D:\\..C++\\surgical_ROBOTS_prototype"
+        "D:\\.C++"
     ],
     "git.repositoryScanMaxDepth": 2,
     "python-envs.defaultEnvManager": "ms-python.python:venv",
     "python-envs.defaultPackageManager": "ms-python.python:pip",
     "code-runner.runInTerminal": true,
     "code-runner.executorMap": {
-        "python": "C:\\Users\\a'su's\\Desktop\\项目资料\\27年 工创赛\\视觉模块开发\\.venv\\Scripts\\python.exe -u"
+        "python": "\"$workspaceRoot\\.venv\\Scripts\\python.exe\" -u"
     }
 }

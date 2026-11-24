@@ -1,0 +1,15 @@
+任务码规则配置
+
+规则已从 Python 代码移到 config/task_color_test.json 的 task_code。
+当前按官方智能搬运规则：四组、每组三位。
+第1组为第一批物料颜色和顺序，第2组为第一批放置位置；
+第3组为第二批物料颜色和顺序，第4组为第二批放置位置。
+颜色符号按官方给定映射配置；当前 PDF 对应为 1=red、2=yellow、3=blue、4=green、5=black、6=light_blue。
+
+若官方后续调整颜色映射，只需修改：
+"groups": 4,
+"items_per_group": 3,
+"symbol_to_color": {"1":"red", "2":"yellow", "3":"blue", "4":"green", "5":"black", "6":"light_blue"}
+
+放置位置编码当前按 1、2、3 校验，见 `ring_codes`。
+规则修改后重新运行自动化测试，再复制 config/task_color_test.json 和 tools/task_color_test.py。
