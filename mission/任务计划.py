@@ -18,6 +18,13 @@ class MaterialStatus(str, Enum):
     RING_PLACED = "ring_placed"
     ASSEMBLED = "assembled"
     FAILED = "failed"
+    # 初赛第 11–15 项。暂存和回抓暂存是两次不同的在槽状态。
+    IN_GRIPPER = "in_gripper"
+    ON_SLOT = "on_slot"
+    PLACED_COARSE = "placed_coarse"
+    ON_SLOT_RETURN = "on_slot_return"
+    PLACED_STAGING = "placed_staging"
+    STACKED = "stacked"
 
 
 @dataclass(frozen=True)
@@ -78,7 +85,8 @@ class TaskPlan:
             *(MaterialRecord(item, "first") for item in instruction.first_batch),
             *(MaterialRecord(item, "second") for item in instruction.second_batch),
         ]
-        # 色环码（1/2/3 对应红/绿/蓝）批次内唯一，且必须落在合法取值域。
+        # 环位是放置位置，不是颜色。颜色集合由解析层检查。
+        # 这里只拒绝同一批里重复或越界的粗加工环位，报错不使用 bad_ring 等解析码。
         allowed_ring_codes = {"1", "2", "3"}
         for batch_name, batch_items in (("first_batch", instruction.first_batch),
                                         ("second_batch", instruction.second_batch)):
@@ -102,13 +110,40 @@ class TaskPlan:
         if record is None:
             raise KeyError(f"未知物料: {material_id}")
         allowed = {
-            MaterialStatus.PENDING: {MaterialStatus.ON_ROBOT, MaterialStatus.FAILED},
+            MaterialStatus.PENDING: {MaterialStatus.ON_ROBOT, MaterialStatus.IN_GRIPPER, MaterialStatus.FAILED},
             MaterialStatus.ON_ROBOT: {MaterialStatus.RING_PLACED, MaterialStatus.FAILED},
             MaterialStatus.RING_PLACED: {MaterialStatus.ASSEMBLED, MaterialStatus.FAILED},
             MaterialStatus.ASSEMBLED: set(),
             MaterialStatus.FAILED: set(),
+            MaterialStatus.IN_GRIPPER: {MaterialStatus.ON_SLOT, MaterialStatus.ON_SLOT_RETURN, MaterialStatus.FAILED},
+            MaterialStatus.ON_SLOT: {MaterialStatus.PLACED_COARSE, MaterialStatus.FAILED},
+            MaterialStatus.PLACED_COARSE: {MaterialStatus.IN_GRIPPER, MaterialStatus.FAILED},
+            MaterialStatus.ON_SLOT_RETURN: {
+                MaterialStatus.PLACED_STAGING, MaterialStatus.STACKED, MaterialStatus.FAILED,
+            },
+            MaterialStatus.PLACED_STAGING: set(),
+            MaterialStatus.STACKED: set(),
         }
         if status not in allowed[record.status]:
             raise ValueError(f"非法物料状态转换: {record.status.value} -> {status.value}")
+        if status == MaterialStatus.PLACED_STAGING and record.instruction.batch != 1:
+            raise ValueError("只有第一批能放到暂存环")
+        if status == MaterialStatus.STACKED and record.instruction.batch != 2:
+            raise ValueError("只有第二批能码垛")
         record.status = status
         return record
+
+    def stack_target(self, second_record: MaterialRecord) -> Optional[str]:
+        """第二批只能叠到同色、且已经放到暂存环上的第一批物料。"""
+        if second_record.instruction.batch != 2 or second_record.status != MaterialStatus.ON_SLOT_RETURN:
+            return None
+        lowers = [
+            record for record in self.records
+            if record.instruction.batch == 1
+            and record.instruction.color == second_record.instruction.color
+            and record.instruction.staging_ring == second_record.instruction.staging_ring
+            and record.status == MaterialStatus.PLACED_STAGING
+        ]
+        if len(lowers) != 1:
+            return None
+        return lowers[0].instruction.material_id

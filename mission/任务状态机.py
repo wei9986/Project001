@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from mission.扫码读取 import TaskInstruction, parse_task_qr
+from mission.初赛流程 import CompetitionFlow
+from mission.扫码读取 import parse_task_code, parse_task_qr
 from mission.任务计划 import MaterialStatus, TaskPlan
 
 
@@ -56,7 +57,11 @@ class MissionStateMachine:
 
     def __init__(self, state_timeout_ms: float = 5000.0, max_recovery_attempts: int = 2,
                  max_scan_retries: int = 3,
-                 state_timeouts: Optional[Dict[str, float]] = None) -> None:
+                 state_timeouts: Optional[Dict[str, float]] = None,
+                 require_display: bool = False,
+                 depart_policy: str = "full_batch",
+                 home_zone: int = 5,
+                 still_speed_mm_s: Optional[float] = None) -> None:
         if state_timeout_ms <= 0 or max_recovery_attempts < 0 or max_scan_retries < 0:
             raise ValueError("状态超时必须为正数，恢复次数和扫码重试次数不能为负数")
         self.state = MissionState.S0_INIT
@@ -77,6 +82,19 @@ class MissionStateMachine:
         self.resume_state = MissionState.S0_INIT
         # 当前需要硬件 DONE 确认的动作；恢复成功后会重发，保证中断的动作不被吞掉。
         self.in_flight: Optional[MissionAction] = None
+        self.task_code: Optional[str] = None
+        self.require_display = require_display
+        self.display_pending = False
+        self.held_plan: Optional[TaskPlan] = None
+        # 比赛时钟判定的本轮结束。空着时，tick 仍只处理约 5 秒的步骤超时。
+        self.round_end_reason: Optional[str] = None
+        self.depart_policy = depart_policy
+        self.home_zone = int(home_zone)
+        self.still_speed_mm_s = still_speed_mm_s
+        # JSON 调试任务保持旧动作名。官方四组任务码才进入初赛搬运。
+        self.competition_mode = False
+        self.step_recovery = True
+        self.flow: Optional[CompetitionFlow] = None
 
     def _action(self, name: str, **data: Any) -> List[MissionAction]:
         """创建交给硬件或集成层执行的动作。"""
@@ -97,6 +115,27 @@ class MissionStateMachine:
         self.state = state
         self.entered_ms = now_ms
 
+    def begin_task_read(self, now_ms: float) -> List[MissionAction]:
+        """比赛一键之后从就位直接读码。不发 self_test，也不再按约 5 秒恢复。"""
+        if self.state != MissionState.S0_INIT:
+            return []
+        self.step_recovery = False
+        self._transition(MissionState.S1_READ_TASK, now_ms)
+        return self._action("read_task_qr")
+
+    def reset(self) -> None:
+        """清空本轮任务、结束原因和飞行中的动作。不发送命令。"""
+        self.__init__(
+            self.state_timeout_ms,
+            self.max_recovery_attempts,
+            self.max_scan_retries,
+            self.state_timeouts,
+            self.require_display,
+            self.depart_policy,
+            self.home_zone,
+            self.still_speed_mm_s,
+        )
+
     def handle(self, event: MissionEvent, now_ms: float) -> List[MissionAction]:
         """处理一个事件并返回下一步动作；错误状态的事件会被忽略。"""
         try:
@@ -108,8 +147,7 @@ class MissionStateMachine:
     def _handle_impl(self, event: MissionEvent, now_ms: float) -> List[MissionAction]:
         data = event.data or {}
         if event.name == "reset":
-            self.__init__(self.state_timeout_ms, self.max_recovery_attempts,
-                          self.max_scan_retries, self.state_timeouts)
+            self.reset()
             return self._action("reset_outputs")
         # F-01：任务实质推进即归还恢复配额。
         # max_recovery_attempts 的语义是「连续失败配额」，不是「全程总量」；
@@ -118,6 +156,9 @@ class MissionStateMachine:
         if event.name in self._PROGRESS_EVENTS:
             self.recovery_attempts = 0
         if event.name in {"action_failed", "communication_lost", "safety_fault"}:
+            if not self.step_recovery:
+                self.end_round(event.name)
+                return self._action("STOP", reason_code=4)
             return self._recover(now_ms, event.name)
         if self.state == MissionState.S0_INIT and event.name == "start":
             return self._hardware_action("self_test")
@@ -127,7 +168,10 @@ class MissionStateMachine:
             return self._action("read_task_qr")
         if self.state == MissionState.S1_READ_TASK and event.name == "task_scanned":
             try:
-                instruction = parse_task_qr(data["scan"])
+                scan = data["scan"]
+                raw = scan.raw_value.strip()
+                # JSON 只留给调试配置。现场四组任务码走 parse_task_code。
+                instruction = parse_task_qr(scan) if raw.startswith("{") else parse_task_code(scan)
                 plan = TaskPlan(instruction)
             except (TypeError, ValueError, KeyError, AttributeError) as exc:
                 # 无效/不完整任务码：先重试，超限后进入恢复流程，避免任务崩溃。
@@ -136,9 +180,40 @@ class MissionStateMachine:
                     return self._recover(now_ms, f"任务码连续 {self.scan_retries} 次解析失败: {exc}")
                 return []
             self.scan_retries = 0
+            self.task_code = raw
+            shown = self._action(
+                "show_task_code", task_code=raw, grab_count=0, place_count=0
+            )
+            if self.require_display:
+                # 显示失败时停在读码，不把计划提交到装车。
+                self.held_plan = plan
+                self.display_pending = True
+                return shown
             self.plan = plan
+            if self._is_competition_plan(plan):
+                return self._begin_competition(now_ms)
+            self._transition(MissionState.S2_FIRST_BATCH, now_ms)
+            loaded = self._load_next_first(now_ms)[0]
+            action = MissionAction(loaded.name, {**loaded.data, "task_code": raw})
+            self.in_flight = action
+            return [action]
+        if self.state == MissionState.S1_READ_TASK and event.name == "task_displayed" and self.display_pending:
+            plan = self.held_plan
+            self.display_pending = False
+            self.held_plan = None
+            self.plan = plan
+            if plan is not None and self._is_competition_plan(plan):
+                return self._begin_competition(now_ms)
             self._transition(MissionState.S2_FIRST_BATCH, now_ms)
             return self._load_next_first(now_ms)
+        if self.competition_mode and event.name == "action_done":
+            return self._competition_confirm(data, now_ms)
+        if self.competition_mode and event.name == "travel_done":
+            return self._competition_travel(data, now_ms)
+        if self.competition_mode and event.name == "target_color":
+            return self._competition_color(data, now_ms)
+        if self.competition_mode and event.name == "turntable_ready":
+            return self._competition_turntable(data, now_ms)
         if self.state == MissionState.S2_FIRST_BATCH and event.name == "material_loaded":
             record = self._require_current()
             self.plan.update(record.instruction.material_id, MaterialStatus.ON_ROBOT)
@@ -189,6 +264,83 @@ class MissionStateMachine:
             return self._action("safe_stop", reason="异常恢复失败")
         return []
 
+    @staticmethod
+    def _is_competition_plan(plan: TaskPlan) -> bool:
+        """官方任务码的物料带批次号。JSON 调试任务的批次是 0。"""
+        return any(record.instruction.batch for record in plan.records)
+
+    def _begin_competition(self, now_ms: float) -> List[MissionAction]:
+        self.competition_mode = True
+        self.step_recovery = False
+        self.flow = CompetitionFlow(
+            self.plan, self.depart_policy, self.home_zone, self.still_speed_mm_s
+        )
+        self._transition(MissionState.S2_FIRST_BATCH, now_ms)
+        return self._steps(self.flow.start())
+
+    def _steps(self, steps) -> List[MissionAction]:
+        if not steps:
+            return []
+        step = steps[0]
+        return self._hardware_action(step.name, **step.data)
+
+    def _competition_confirm(self, data: Dict[str, Any], now_ms: float) -> List[MissionAction]:
+        if self.flow is None or self.round_end_reason is not None:
+            return []
+        before = (self.flow.phase, self.flow.cursor, self.flow.stack_ok)
+        steps = self.flow.confirm(data.get("slot_mask"), data.get("gripper"))
+        if self.flow.blocked:
+            self.end_round(self.flow.blocked)
+            self.in_flight = None
+            return []
+        if steps or (self.flow.phase, self.flow.cursor, self.flow.stack_ok) != before:
+            self.recovery_attempts = 0
+        return self._finish_or_continue(steps, now_ms)
+
+    def _competition_travel(self, data: Dict[str, Any], now_ms: float) -> List[MissionAction]:
+        if self.flow is None or self.round_end_reason is not None:
+            return []
+        steps = self.flow.travel_done(data.get("speed_mm_s"))
+        if self.flow.blocked:
+            self.end_round(self.flow.blocked)
+            self.in_flight = None
+            return []
+        if self.flow.awaiting_color or self.flow.awaiting_turntable:
+            self.in_flight = None
+            self.recovery_attempts = 0
+            return []
+        if steps or self.flow.finished:
+            self.recovery_attempts = 0
+        return self._finish_or_continue(steps, now_ms)
+
+    def _competition_color(self, data: Dict[str, Any], now_ms: float) -> List[MissionAction]:
+        if self.flow is None or self.round_end_reason is not None:
+            return []
+        steps = self.flow.offer_color(data.get("color"))
+        if self.flow.blocked:
+            self.end_round(self.flow.blocked)
+            self.in_flight = None
+            return []
+        if steps:
+            self.recovery_attempts = 0
+        return self._steps(steps)
+
+    def _competition_turntable(self, data: Dict[str, Any], now_ms: float) -> List[MissionAction]:
+        if self.flow is None or self.round_end_reason is not None:
+            return []
+        window = data.get("window_open")
+        steps = self.flow.offer_turntable(bool(data.get("stable")), window if isinstance(window, bool) else None)
+        if steps:
+            self.recovery_attempts = 0
+        return self._steps(steps)
+
+    def _finish_or_continue(self, steps, now_ms: float) -> List[MissionAction]:
+        if self.flow is not None and self.flow.finished and self.flow.home_slow:
+            self._transition(MissionState.COMPLETE, now_ms)
+            self.in_flight = None
+            return self._action("task_complete", task_id=self.plan.task_id if self.plan else None)
+        return self._steps(steps)
+
     def _require_current(self, expected_batch: Optional[str] = None):
         """获取当前正在处理的物料；缺失或批次不符时直接报错。
 
@@ -230,7 +382,10 @@ class MissionStateMachine:
         return self._hardware_action("load_second_material", material=record.instruction.__dict__)
 
     def _recover(self, now_ms: float, reason: str) -> List[MissionAction]:
-        """有限次数地恢复；超过次数后安全停止。"""
+        """有限次数地恢复；超过次数后安全停止。比赛读码之后不走这条。"""
+        if not self.step_recovery:
+            self.end_round(reason)
+            return self._action("STOP", reason_code=4)
         if self.state in (MissionState.COMPLETE, MissionState.FAILED):
             return []
         if self.recovery_attempts >= self.max_recovery_attempts:
@@ -245,8 +400,17 @@ class MissionStateMachine:
         self._transition(MissionState.RECOVERY, now_ms)
         return self._action("recover", attempt=self.recovery_attempts, reason=reason)
 
+    def end_round(self, reason: str) -> None:
+        """比赛时钟结束本轮。不进入恢复，已完成的比赛不被覆盖。"""
+        if self.state == MissionState.COMPLETE or self.round_end_reason is not None:
+            return
+        self.round_end_reason = reason
+
     def tick(self, now_ms: float) -> List[MissionAction]:
-        """检查状态是否超时，并进入恢复流程。
+        """检查这一步是否超时，并进入恢复流程。
+
+        这里只管通信和单步卡住，默认约 5 秒。15 秒不动和 180 秒比赛时间
+        由 mission/比赛时钟.py 判断，不在本方法里。
 
         RECOVERY 态同样参与超时判定：recovery_done 迟迟不来（恢复卡死）时
         重试恢复，次数耗尽后进入 FAILED，避免永久停摆。
@@ -254,6 +418,10 @@ class MissionStateMachine:
         S0_INIT 不再豁免（F-03）：自检握手失败/相机未出图时，若这里直接返回
         空列表，运行循环会永远空转且无任何恢复动作。S0 使用独立短超时。
         """
+        if self.round_end_reason is not None:
+            return []
+        if not self.step_recovery:
+            return []
         if self.state in (MissionState.COMPLETE, MissionState.FAILED):
             return []
         timeout_ms = self.state_timeouts.get(self.state.value, self.state_timeout_ms)
