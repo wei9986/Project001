@@ -1,14 +1,25 @@
 {
-  "_comment": "barcode_mapping 当前未接入主流程（见 docs/检测路径说明.md）；stations 为实机导航坐标，禁止全 0 上实机。",
+  "_comment": "工位坐标未实测。全 0 不能上比赛。仿真坐标在 config/仿真场地.json。",
+  "odometry_source": null,
   "barcode_mapping": {
     "1": [0.0, 0.0],
     "2": [100.0, 0.0],
     "3": [200.0, 0.0]
   },
   "stations": {
-    "start": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-    "temporary": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-    "processing": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-    "finished": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0}
+    "qr_view": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0},
+    "source": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0},
+    "coarse": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0},
+    "staging": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0},
+    "home_a": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0},
+    "home_b": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0}
+  },
+  "ring_centers_mm": {
+    "coarse": {"1": null, "2": null, "3": null},
+    "staging": {"1": null, "2": null, "3": null}
+  },
+  "home_zones_mm": {
+    "home_a": [],
+    "home_b": []
   }
 }

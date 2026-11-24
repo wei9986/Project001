@@ -1,0 +1,16 @@
+{
+  "synthetic": true,
+  "odometry_source": "sim",
+  "stations": {
+    "qr_view": {"x_mm": 200.0, "y_mm": 100.0, "yaw_deg": 90.0, "arm_yaw_deg": 0.0},
+    "source": {"x_mm": 200.0, "y_mm": 400.0, "yaw_deg": 90.0, "arm_yaw_deg": 0.0},
+    "coarse": {"x_mm": 200.0, "y_mm": 900.0, "yaw_deg": 90.0, "arm_yaw_deg": 0.0},
+    "staging": {"x_mm": 200.0, "y_mm": 1400.0, "yaw_deg": 90.0, "arm_yaw_deg": 0.0},
+    "home_a": {"x_mm": 200.0, "y_mm": 100.0, "yaw_deg": 0.0, "arm_yaw_deg": 0.0},
+    "home_b": {"x_mm": 200.0, "y_mm": 1800.0, "yaw_deg": 180.0, "arm_yaw_deg": 0.0}
+  },
+  "ring_centers_mm": {
+    "coarse": {"1": [120.0, 900.0], "2": [200.0, 900.0], "3": [280.0, 900.0]},
+    "staging": {"1": [120.0, 1400.0], "2": [200.0, 1400.0], "3": [280.0, 1400.0]}
+  }
+}

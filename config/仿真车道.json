@@ -1,0 +1,12 @@
+{
+  "measured": true,
+  "synthetic": true,
+  "polygon_mm": [[0, 0], [400, 0], [400, 2000], [0, 2000]],
+  "stations_mm": {
+    "source": [200, 400],
+    "coarse": [200, 900],
+    "staging": [200, 1400],
+    "home_a": [200, 100],
+    "home_b": [200, 1800]
+  }
+}
