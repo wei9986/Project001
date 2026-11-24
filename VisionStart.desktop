@@ -1,0 +1,9 @@
+[Desktop Entry]
+# 只用于调试。比赛镜像不安装这项自启动。
+Type=Application
+Name=Vision Start
+Comment=Debug only. Do not install on a competition image.
+Terminal=true
+Exec=bash /home/pi/Desktop/Project001-opencv.gcs/start.sh
+Icon=camera-photo
+Categories=Development;

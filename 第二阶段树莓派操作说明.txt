@@ -1,0 +1,59 @@
+第二阶段：实时像素坐标、目标锁定
+
+1. 更新
+关闭旧摄像头程序。把 pi_stage2_update.zip 解压后的内容合并到：
+/home/pi/Desktop/Project001-opencv.gcs
+文件夹选合并，包内同名文件选替换，其他文件保留。
+config/只加入task_color_test.json，不删除整个config，不覆盖颜色阈值。
+tools中三个Python文件必须一起更新，不要只复制入口。
+
+2. 启动（树莓派桌面终端）
+cd /home/pi/Desktop/Project001-opencv.gcs
+source .venv/bin/activate
+python -m tools.task_color_test --source 0
+摄像头不是0时修改编号，无需安装新增依赖。
+
+3. 操作
+扫描四组任务码，例如452+321+254+312；第1/3组为两批颜色顺序，第2/4组为对应放置位置。
+右侧信息栏显示任务、批次、编号、XY及dXdY、状态、帧率和检测耗时。
+XY单位px，左上角原点，向右X增大、向下Y增大。
+dX=目标X-参考点X，dY=目标Y-参考点Y，不是机械运动指令。
+白色十字是参考点，黄色圆圈标出锁定目标。
+SEARCHING：无锁定。LOCKED：本帧目标有效，可人工确认。
+LOST：原锁定目标暂不可定位，坐标显示--，禁止确认。
+默认最后一次有效观测500ms后释放旧锁定并重新选择。
+初次选离参考点最近的有效同色目标，此后不会因为另一个更近就主动换锁。
+SPACE：确认本项视觉结果，松开后再按。无空格事件至少500ms才能重新允许确认。
+R：释放锁定重新选。C：参考点恢复画面中心。
+鼠标点击原图：修改参考点并重新选。点击侧栏无效。
+Q：退出。DONE：六项完成。
+鼠标参考点不保存，下次启动使用配置。
+四组任务码现在会解析为两批颜色顺序和对应放置位置；视觉测试仍不控制STM32。
+
+4. 配置
+config/task_color_test.json：参考点归一化坐标、丢失等待、处理超时、坐标日志间隔。
+reference_normalized默认[0.5,0.5]，范围0到1。
+lost_timeout_ms默认500。
+max_processing_age_ms默认200（取帧完成后的处理时长，不包含相机内部缓冲延迟）。
+coordinate_log_interval_ms默认100。时间参数必须为有限正数。
+需要使用其他文件：
+python -m tools.task_color_test --source 0 --selection-config config/task_color_test.json
+
+5. 验收
+单物料缓慢移动，坐标更新；移出画面后下一处理帧失效。
+两件同色物料分离摆放，另一件靠近参考点时不主动换锁。
+短暂遮挡后若原编号仍存在且重新确认，可恢复；旧编号过期则超时后重新选择。
+放错颜色或检测超时不能按空格推进。
+测试R、C、鼠标点击、六次独立确认和中途退出。
+测试同色交叉/重叠，记录是否交换编号，此情况不保证物理身份保持。
+连续运行10分钟记录耗时和帧率、是否崩溃或窗口假死。
+日志在logs/task_color_*.jsonl：包含任务序号、唯一确认目标、坐标、锁定/丢失/释放事件。
+coordinates最多每100ms一条，事件即时记录；无效坐标为null。
+
+6. 自动测试（可选）
+python -m unittest discover -s tests -p test_target_selection.py -v
+python -m unittest discover -s tests -p test_task_color_test.py -v
+
+本次是像素视觉测试，没有毫米精度承诺，不控制STM32，不代表已经抓住物料。
+OpenCV没有物理按键释放事件；通过事件静默间隔防重复，请使用短按而非长按。
+待现场完成上述摄像头及10分钟测试，才能确认树莓派运行效果。

@@ -1,0 +1,44 @@
+上电后自动启动视觉测试（桌面自动登录方式）
+
+适用：已安装桌面版Raspberry Pi OS、项目依赖已装好，摄像头可正常测试。
+当前视觉程序需要图形桌面；本方案不是无桌面的系统后台服务。
+
+1. 把本包三个程序文件放到项目根目录，与app、tools、config同级。
+保留原项目、.venv及颜色配置。
+
+2. 在树莓派以桌面用户登录，执行（安装脚本不要加sudo）：
+cd /home/pi/Desktop/Project001-opencv.gcs
+python3 setup_autostart.py --source 0
+摄像头为1则把0改成1。再次执行即可更新编号。
+
+3. 开启桌面自动登录：
+sudo raspi-config
+找到 System Options -> Boot / Auto Login（不同版本菜单名称略有差别），
+选择 Desktop Autologin，而不是 Console Autologin。
+完成后退出，并重启：
+sudo reboot
+
+效果：上电 -> 自动进入桌面 -> 等待5秒 -> 打开扫码/颜色追踪窗口。
+无需点图标、无需敲命令。仍按当前配置读取任务码，人工按空格确认视觉项。
+不发送STM32命令，不等同于机械臂自动抓取或比赛整机自主完成。
+按Q退出后本次登录不会再次自动打开；下次登录/重启才再启动。
+无需网络；需要正常的图形会话。无显示器的运行取决于桌面/虚拟显示配置，尚未验证。
+
+4. 重启后没有窗口：
+cat /home/pi/Desktop/Project001-opencv.gcs/logs/autostart.log
+如果没有日志，先确认已进入桌面，并检查：
+cat ~/.config/autostart/vision-project-autostart.desktop
+手动验证同一入口（在桌面终端运行）：
+bash /home/pi/Desktop/Project001-opencv.gcs/boot_vision.sh 0
+已经有一个项目进程运行时，新启动会退出，避免摄像头重复打开。
+关闭其他摄像头程序后再试。
+本次与上次启动日志分别为autostart.log及autostart.previous.log。
+
+5. 取消程序自启动：
+cd /home/pi/Desktop/Project001-opencv.gcs
+python3 setup_autostart.py --remove
+只删除本工具安装的自启动项，不删除项目，不关闭当前进程，不改变系统自动登录设置。
+如需取消桌面自动登录，在raspi-config中重新选择需要登录的模式。
+
+6. 移动项目后，需要在新目录重新执行安装脚本以更新自启动路径。
+以后实机无桌面运行可另配systemd服务；当前不自动切换到live模式。
