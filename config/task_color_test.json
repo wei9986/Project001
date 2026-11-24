@@ -1,0 +1,16 @@
+{
+  "reference_normalized": [0.5, 0.5],
+  "lost_timeout_ms": 500,
+  "max_processing_age_ms": 200,
+  "coordinate_log_interval_ms": 100,
+  "min_stable_frames": 5,
+  "max_center_jitter_px": 5.0,
+  "max_area_change_ratio": 0.30,
+  "max_detection_age_ms": 200,
+  "task_code": {
+    "groups": 4,
+    "items_per_group": 3,
+    "symbol_to_color": {"1": "red", "2": "yellow", "3": "blue", "4": "green", "5": "black", "6": "light_blue"},
+    "ring_codes": ["1", "2", "3"]
+  }
+}

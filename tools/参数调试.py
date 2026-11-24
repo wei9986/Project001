@@ -13,8 +13,10 @@ import cv2
 from vision.颜色追踪 import ColorTracker, load_config
 
 
-def save_config(config: Dict[str, Any], path: str) -> None:
-    """保存完整追踪配置到 JSON 文件。"""
+def save_config(config: Dict[str, Any], path: str, latch: Any = None) -> None:
+    """保存完整追踪配置到 JSON 文件。一键启动之后锁存会拒绝写入。"""
+    if latch is not None and not latch.allows_config_write():
+        raise PermissionError("一键启动之后不能保存参数")
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as file:

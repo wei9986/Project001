@@ -13,6 +13,7 @@ from tools.启动检查 import (
     REQUIRED_FILES,
     ROOT_DIR,
     _apply_profile_gates,
+    competition_launch_report,
     run_preflight,
 )
 
@@ -32,12 +33,17 @@ class PreflightProfileTests(unittest.TestCase):
         self.assertIn("站点坐标为 0", joined)
         self.assertIn("calibration", joined)
 
-    def test_competition_requires_fine_localization_and_sensors(self):
+    def test_competition_checks_runtime_files_and_ignores_task_config(self):
         report = run_preflight(profile="competition")
         self.assertFalse(report["passed"])
         joined = "\n".join(report["errors"])
-        self.assertIn("use_fine_localization=true", joined)
-        self.assertIn("ToF 与抓取确认均未接入", joined)
+        self.assertIn("use_fine_localization 必须为 true", joined)
+        self.assertIn("still_speed_mm_s 必须大于 0", joined)
+        self.assertIn("config/车道.json", joined)
+        self.assertNotIn("缺少底盘里程计来源", joined)
+        self.assertNotIn("任务配置.json: 全部站点坐标为 0", joined)
+        self.assertTrue(any("安装后须复核" in item for item in report["warnings"]))
+        self.assertTrue(any("wireless.address 为空" in item for item in report["warnings"]))
 
     def test_profile_gates_promote_zero_stations_to_error(self):
         errors: list[str] = []
@@ -148,8 +154,65 @@ class PreflightProfileTests(unittest.TestCase):
                 competition = run_preflight(profile="competition")
             self.assertFalse(competition["passed"])
             joined = "\n".join(competition["errors"])
-            self.assertIn("use_fine_localization=true", joined)
-            self.assertIn("ToF 与抓取确认均未接入", joined)
+            self.assertIn("use_fine_localization 必须为 true", joined)
+            self.assertIn("still_speed_mm_s 必须大于 0", joined)
+            self.assertNotIn("ToF 与抓取确认均未接入", joined)
+
+    def test_zero_recognition_delay_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "转盘.json").write_text(
+                json.dumps({
+                    "min_dwell_ms": 1000,
+                    "recognition_ms": 0,
+                    "action_ms": 400,
+                    "margin_ms": 50,
+                }),
+                encoding="utf-8",
+            )
+            (config_dir / "车道.json").write_text(json.dumps({"measured": False}), encoding="utf-8")
+            (config_dir / "颜色追踪配置.json").write_text(json.dumps({"colors": {}, "tracking": {}}), encoding="utf-8")
+            report = competition_launch_report(
+                {
+                    "match_clock": {"still_speed_mm_s": 5, "start_window_s": 30},
+                    "home_station": "home_b",
+                    "start_inputs": {"clock": "gpio", "robot": "gpio"},
+                    "task_board": {"port": "memory", "display_required": True},
+                    "sensor_source": "status_frame",
+                    "speed_source": "status_frame",
+                    "use_fine_localization": True,
+                    "calibration": "missing.json",
+                    "safety": {"minimum_tof_mm": 80.0},
+                    "wireless": {"address": None},
+                    "lane_config": "config/车道.json",
+                    "color_config": "config/颜色追踪配置.json",
+                },
+                root,
+            )
+            joined = "\n".join(report["errors"])
+            self.assertNotIn("recognition_ms", joined)
+            self.assertNotIn("min_dwell_ms", joined)
+
+    def test_competition_main_exits_before_runtime(self):
+        from app.视觉应用 import main
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = json.loads((ROOT_DIR / "config" / "实机配置.json").read_text(encoding="utf-8"))
+            source["mode"] = "competition"
+            config_path = root / "实机配置.json"
+            config_path.write_text(json.dumps(source), encoding="utf-8")
+            with patch("app.实机运行.LiveRuntime") as runtime:
+                code = main([
+                    "--mode", "live",
+                    "--live-config", str(config_path),
+                    "--test-root", str(root / "logs"),
+                    "--log", str(root / "app.jsonl"),
+                ])
+            self.assertEqual(code, 1)
+            runtime.assert_not_called()
 
 
 if __name__ == "__main__":

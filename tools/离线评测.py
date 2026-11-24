@@ -104,7 +104,7 @@ def evaluate(config: ApplicationConfig) -> List[ScenarioResult]:
     endpoint = ProtocolEndpoint()
     bridge = ProtocolActionBridge(endpoint, left, right)
     try:
-        bridge.send_action("return_home", b"{}", 0.0)
+        bridge.send_action("HOME", 0.0, zone=5)
         observed = "sent"
     except RuntimeError:
         observed = "transport_closed"

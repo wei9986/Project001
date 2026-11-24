@@ -55,8 +55,11 @@ def _validate_color_config(data: dict, relative: str, errors: List[str], _warnin
         if kernel_size is not None and (not isinstance(kernel_size, int) or kernel_size < 1 or kernel_size % 2 == 0):
             errors.append(f"{relative}: colors.{name}.kernel_size 必须为正奇数")
         ranges = values.get("ranges")
-        if not isinstance(ranges, list) or not ranges:
-            errors.append(f"{relative}: colors.{name}.ranges 必须为非空列表")
+        if not isinstance(ranges, list):
+            errors.append(f"{relative}: colors.{name}.ranges 必须为列表")
+            continue
+        if not ranges:
+            _warnings.append(f"{relative}: colors.{name}.ranges 为空，颜色尚未实测")
             continue
         for index, pair in enumerate(ranges):
             if not isinstance(pair, list) or len(pair) != 2:
@@ -248,6 +251,150 @@ def _stations_all_zero(data: dict) -> bool:
     return True
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _positive(value: object) -> bool:
+    return _is_number(value) and float(value) > 0
+
+
+def _read_object(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _point_filled(value: object) -> bool:
+    if isinstance(value, (list, tuple)) and len(value) >= 2 and all(_is_number(item) for item in value[:2]):
+        return True
+    if isinstance(value, dict):
+        return all(_is_number(value.get(key)) for key in ("x_mm", "y_mm"))
+    return False
+
+
+def _dock_filled(value: object) -> bool:
+    """停靠点要有位置和朝向。只给两个毫米数不算填完。"""
+    if isinstance(value, (list, tuple)) and len(value) >= 3 and all(_is_number(item) for item in value[:3]):
+        return True
+    if isinstance(value, dict):
+        return all(_is_number(value.get(key)) for key in ("x_mm", "y_mm", "yaw_deg"))
+    return False
+
+
+def _polygon_filled(value: object) -> bool:
+    return isinstance(value, list) and len(value) >= 3 and all(_point_filled(point) for point in value)
+
+
+def competition_launch_report(live: dict, root: Path) -> Dict[str, object]:
+    """比赛档只检查运行时会读的字段。不打开相机，不连接串口。"""
+    errors: List[str] = []
+    warnings: List[str] = []
+    relative = "config/实机配置.json"
+    clock = live.get("match_clock") if isinstance(live.get("match_clock"), dict) else {}
+    if not _positive(clock.get("still_speed_mm_s")):
+        errors.append(f"{relative}: match_clock.still_speed_mm_s 必须大于 0")
+    window = live.get("start_window_s") if "start_window_s" in live else clock.get("start_window_s")
+    if not _positive(window):
+        errors.append(f"{relative}: start_window_s 必须大于 0，只填赛会公布的启动时限")
+    if live.get("home_station") not in ("home_a", "home_b"):
+        errors.append(f"{relative}: home_station 必须写成 home_a 或 home_b")
+    inputs = live.get("start_inputs") if isinstance(live.get("start_inputs"), dict) else {}
+    for name, label in (("clock", "发令"), ("robot", "车上")):
+        if inputs.get(name) in (None, ""):
+            errors.append(f"{relative}: 缺少{label}输入 start_inputs.{name}")
+    board = live.get("task_board") if isinstance(live.get("task_board"), dict) else {}
+    port = board.get("port")
+    if not isinstance(port, str) or not port.strip() or board.get("display_required") is not True:
+        errors.append(f"{relative}: task_board.port 必须非空，且 display_required 为真")
+    sensor_source = live.get("sensor_source")
+    speed_source = live.get("speed_source")
+    if sensor_source not in ("status_frame", "gpio") or speed_source != "status_frame":
+        errors.append(f"{relative}: sensor_source 须为 status_frame 或 gpio，speed_source 须为 status_frame")
+    if live.get("use_fine_localization") is not True:
+        errors.append(f"{relative}: use_fine_localization 必须为 true")
+    def under_root(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else root / path
+
+    calibration = live.get("calibration")
+    calibration_path = under_root(calibration) if isinstance(calibration, str) else None
+    if calibration_path is None or not calibration_path.is_file():
+        errors.append(f"{relative}: calibration 必须指向已有文件")
+    safety = live.get("safety") if isinstance(live.get("safety"), dict) else {}
+    if not _positive(safety.get("minimum_tof_mm")):
+        errors.append(f"{relative}: safety.minimum_tof_mm 必须为正数")
+    else:
+        warnings.append(f"{relative}: safety.minimum_tof_mm 安装后须复核")
+    if live.get("wireless", {}).get("address") in (None, "") if isinstance(live.get("wireless"), dict) else True:
+        warnings.append(f"{relative}: wireless.address 为空，屏幕仍是计分装置")
+    obstacle = live.get("obstacle") if isinstance(live.get("obstacle"), dict) else {}
+    if any(obstacle.get(key) is None for key in ("min_confidence", "width_tolerance_mm", "clearance_mm")):
+        warnings.append(f"{relative}: 障碍置信度、宽度容差或绕行间距为空，看见圆柱时不会因此停车")
+
+    lane_name = live.get("lane_config") or "config/车道.json"
+    lane_path = under_root(lane_name) if isinstance(lane_name, str) else root / "config" / "车道.json"
+    lane = _read_object(lane_path) if isinstance(lane_path, Path) and lane_path.is_file() else {}
+    lane_label = "config/车道.json"
+    if not lane:
+        errors.append(f"{lane_label}: 缺少实测车道文件")
+    else:
+        if lane.get("measured") is not True:
+            errors.append(f"{lane_label}: measured 必须为真")
+        if not _polygon_filled(lane.get("polygon_mm")):
+            errors.append(f"{lane_label}: 灰色车道多边形至少三个顶点")
+        stations = lane.get("stations_mm") if isinstance(lane.get("stations_mm"), dict) else {}
+        missing_docks = [name for name in ("qr_view", "source", "coarse", "staging", "home_a", "home_b") if not _dock_filled(stations.get(name))]
+        if missing_docks:
+            errors.append(f"{lane_label}: 停靠点未填完：{','.join(missing_docks)}")
+        if not _point_filled(lane.get("junction_mm")):
+            errors.append(f"{lane_label}: 路口点未测量")
+        homes = lane.get("home_zones_mm") if isinstance(lane.get("home_zones_mm"), dict) else {}
+        for name in ("home_a", "home_b"):
+            if not _polygon_filled(homes.get(name)):
+                errors.append(f"{lane_label}: 启停区 {name} 未测量")
+        if not _polygon_filled(lane.get("qr_board_region_mm")):
+            errors.append(f"{lane_label}: 二维码板允许区域未测量")
+        rings = lane.get("ring_centers_mm") if isinstance(lane.get("ring_centers_mm"), dict) else {}
+        missing_rings = []
+        for area in ("coarse", "staging"):
+            area_rings = rings.get(area) if isinstance(rings.get(area), dict) else {}
+            for index in ("1", "2", "3"):
+                if not _point_filled(area_rings.get(index)):
+                    missing_rings.append(f"{area}.{index}")
+        if missing_rings:
+            errors.append(f"{lane_label}: 环心未测量：{','.join(missing_rings)}")
+        for key in ("arrival_threshold_mm", "heading_tolerance_deg", "ring_align_tolerance_mm", "qr_search_step_mm"):
+            if not _positive(lane.get(key)):
+                errors.append(f"{lane_label}: {key} 必须大于 0")
+
+    color_name = live.get("color_config") or "config/颜色追踪配置.json"
+    color_path = under_root(color_name) if isinstance(color_name, str) else root / "config" / "颜色追踪配置.json"
+    color = _read_object(color_path) if isinstance(color_path, Path) and color_path.is_file() else {}
+    colors = color.get("colors") if isinstance(color.get("colors"), dict) else {}
+    for name in ("red", "yellow", "blue", "green", "black", "light_blue"):
+        ranges = (colors.get(name) or {}).get("ranges") if isinstance(colors.get(name), dict) else None
+        sampled = (colors.get(name) or {}).get("venue_sampled") is True if isinstance(colors.get(name), dict) else False
+        if not ranges or not sampled:
+            errors.append(f"config/颜色追踪配置.json: colors.{name} 还没有这场灯光下的样本")
+    tracking = color.get("tracking") if isinstance(color.get("tracking"), dict) else {}
+    if not _positive(tracking.get("min_circularity")) or not _positive(tracking.get("min_solidity")):
+        errors.append("config/颜色追踪配置.json: min_circularity 与 min_solidity 必须大于 0")
+
+    turntable_path = root / "config" / "转盘.json"
+    turntable = _read_object(turntable_path) if turntable_path.is_file() else {}
+    if not turntable:
+        errors.append("config/转盘.json: 缺少转盘时间")
+    else:
+        from mission.转盘 import turntable_config_errors
+
+        for key in turntable_config_errors(turntable):
+            errors.append(f"config/转盘.json: {key} 未按抓取窗口的规则填写")
+    return {"passed": not errors, "errors": errors, "warnings": warnings}
+
+
 def _apply_profile_gates(
     profile: ProfileName,
     filename: str,
@@ -259,35 +406,28 @@ def _apply_profile_gates(
     """按 DEV/LIVE/COMPETITION 门禁升级严重级别。"""
     if filename == "任务配置.json" and _stations_all_zero(data):
         message = f"{relative}: 全部站点坐标为 0，尚未实测冻结；实机运行前必须填写真实坐标"
-        if profile in ("live", "competition"):
+        if profile == "live":
             if message in warnings:
                 warnings.remove(message)
             if message not in errors:
                 errors.append(message)
         # simulation 保留 _validate_task_config 写入的 warning
+        # competition 不把任务配置里的工位表当作发车条件
 
     if filename != "实机配置.json":
         return
 
     calibration = data.get("calibration")
-    if profile in ("live", "competition") and calibration is None:
+    if profile == "live" and calibration is None:
         errors.append(f"{relative}: profile={profile} 要求提供 calibration 路径（当前为 null）")
-
-    use_fine = bool(data.get("use_fine_localization", False))
-    if profile == "competition" and not use_fine:
-        errors.append(f"{relative}: profile=competition 要求 use_fine_localization=true")
 
     sensors = data.get("sensors")
     if isinstance(sensors, dict):
         tof = sensors.get("tof_distance_mm", None)
         grasp = sensors.get("grasp_confirmed", None)
         both_unwired = tof is None and grasp is None
-        if both_unwired:
-            message = f"{relative}: ToF 与抓取确认均未接入（sensors 均为 null）"
-            if profile == "competition":
-                errors.append(message)
-            else:
-                warnings.append(message)
+        if both_unwired and profile != "competition":
+            warnings.append(f"{relative}: ToF 与抓取确认均未接入（sensors 均为 null）")
 
 
 VALIDATORS = {
@@ -307,6 +447,7 @@ def run_preflight(
     min_python: tuple[int, int] = (3, 10),
     require_hardware: bool = False,
     profile: ProfileName = "simulation",
+    live_override: dict | None = None,
 ) -> Dict[str, object]:
     """生成不打开硬件的完整启动检查报告。"""
     if profile not in VALID_PROFILES:
@@ -345,6 +486,11 @@ def run_preflight(
         if validator is not None:
             validator(data, relative, errors, warnings)
         _apply_profile_gates(profile, path.name, data, relative, errors, warnings)
+    if profile == "competition":
+        live = live_override if live_override is not None else loaded.get("实机配置.json", {})
+        launch = competition_launch_report(live if isinstance(live, dict) else {}, ROOT_DIR)
+        errors.extend(launch["errors"])
+        warnings.extend(launch["warnings"])
     if invalid_json:
         errors.extend(invalid_json)
     return {
