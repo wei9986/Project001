@@ -163,10 +163,20 @@ def normalize_color_tracking_config(config: Dict[str, Any]) -> Dict[str, Any]:
     normalized_colors: Dict[str, Any] = {}
     for name, values in colors.items():
         color_config = _require_mapping(values, f"colors.{name}")
-        ranges = color_config.get("ranges")
-        if not isinstance(ranges, ABCSequence) or isinstance(ranges, (str, bytes)) or len(ranges) == 0:
-            raise ValueError(f"colors.{name}.ranges 必须是非空 HSV 范围列表")
+        ranges = color_config.get("ranges") or []
+        if not isinstance(ranges, ABCSequence) or isinstance(ranges, (str, bytes)):
+            raise ValueError(f"colors.{name}.ranges 必须是 HSV 范围列表")
         normalized_ranges = []
+        if len(ranges) == 0:
+            normalized_colors[str(name)] = {
+                **color_config,
+                "ranges": [],
+                "kernel_size": _odd_kernel(color_config.get("kernel_size", 5), f"colors.{name}.kernel_size"),
+                "open_iterations": _non_negative_int(color_config.get("open_iterations", 1), f"colors.{name}.open_iterations"),
+                "close_iterations": _non_negative_int(color_config.get("close_iterations", 1), f"colors.{name}.close_iterations"),
+                "draw_color": _validate_draw_color(color_config.get("draw_color", [255, 255, 255]), f"colors.{name}.draw_color"),
+            }
+            continue
         for index, color_range in enumerate(ranges):
             if (not isinstance(color_range, ABCSequence) or isinstance(color_range, (str, bytes))
                     or len(color_range) != 2):
@@ -257,6 +267,7 @@ class Target:
         result["center"] = list(self.center)
         result["pixel"] = list(self.center)
         result["world_mm"] = list(self.world_mm) if self.world_mm is not None else None
+        result["shape"] = "revolute"
         return result
 
 
@@ -325,6 +336,18 @@ class ColorTracker:
         self.last_elapsed_ms = 0.0
         self.trail_length = trail_length
         self.rejected_counts: Dict[str, int] = {name: 0 for name in self.color_names}
+        # 比赛要求圆度和实心度来自实物。为 0 时调试仍放行，比赛则不确认。
+        self.require_measured_shape = False
+
+    def use_colors(self, color_names: Iterable[str]) -> None:
+        """读码之后只追踪这一轮的颜色。"""
+        names = [str(name) for name in color_names]
+        unknown = [name for name in names if name not in self.config["colors"]]
+        if unknown:
+            raise ValueError(f"未配置的颜色: {', '.join(unknown)}")
+        self.color_names = names
+        self.tracks = {name: [] for name in self.color_names}
+        self.rejected_counts = {name: 0 for name in self.color_names}
 
     @property
     def tracking(self) -> Dict[str, Any]:
@@ -366,11 +389,31 @@ class ColorTracker:
         x, y, width, height = self.roi
         return hsv[y:y + height, x:x + width], (x, y)
 
+    def _center_in_other_mask(
+        self,
+        center: Tuple[int, int],
+        color_name: str,
+        masks: Dict[str, np.ndarray],
+        offset: Tuple[int, int],
+    ) -> bool:
+        """同一个像素同时落入两种颜色时，标成冲突，不能确认。"""
+        x = int(center[0]) - int(offset[0])
+        y = int(center[1]) - int(offset[1])
+        for other, mask in masks.items():
+            if other == color_name or mask.size == 0:
+                continue
+            if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1] and int(mask[y, x]) > 0:
+                return True
+        return False
+
     def create_mask(self, hsv: np.ndarray, color_name: str) -> np.ndarray:
         """生成指定颜色的干净二值掩膜。"""
         color_config = self.config["colors"][color_name]
+        ranges = color_config.get("ranges") or []
+        if not ranges:
+            return np.zeros(hsv.shape[:2], dtype=np.uint8)
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        for lower, upper in color_config["ranges"]:
+        for lower, upper in ranges:
             mask = cv2.bitwise_or(
                 mask,
                 cv2.inRange(hsv, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8)),
@@ -398,6 +441,11 @@ class ColorTracker:
     def _passes_shape_filter(self, values: Tuple[float, float, float, float, float, float]) -> bool:
         area, circularity, solidity, _, _, aspect_ratio = values
         tracking = self.tracking
+        if self.require_measured_shape and (
+            float(tracking.get("min_circularity", 0) or 0) <= 0
+            or float(tracking.get("min_solidity", 0) or 0) <= 0
+        ):
+            return False
         max_area = float(tracking.get("max_area", 0))
         if area < float(tracking["min_area"]):
             return False
@@ -644,6 +692,7 @@ class ColorTracker:
         start = cv2.getTickCount()
         hsv = self.preprocess(frame)
         roi_hsv, offset = self.apply_roi(hsv)
+        masks = {color_name: self.create_mask(roi_hsv, color_name) for color_name in self.color_names}
         results: Dict[str, Any] = {
             "schema_version": "2.0",
             "frame_index": self.frame_index,
@@ -651,6 +700,7 @@ class ColorTracker:
                 "world_mm" if self.calibration is not None and self.calibration.has_plane_mapping else "pixel_only"
             ),
             "targets": [],
+            "conflicts": [],
             "colors": {},
         }
         timed_out = False
@@ -664,9 +714,18 @@ class ColorTracker:
                 timed_out_colors.append(color_name)
                 results["colors"][color_name] = self._mark_color_timed_out(color_name)
                 continue
-            mask = self.create_mask(roi_hsv, color_name)
+            mask = masks[color_name]
             candidates = self._candidate_targets(mask, color_name, offset)
-            associated = self._associate(color_name, candidates)
+            clean: List[Target] = []
+            conflicts: List[Target] = []
+            for candidate in candidates:
+                if self._center_in_other_mask(candidate.center, color_name, masks, offset):
+                    candidate.status = "conflict"
+                    candidate.valid = False
+                    conflicts.append(candidate)
+                else:
+                    clean.append(candidate)
+            associated = self._associate(color_name, clean)
             self._attach_world_coordinates(associated, already_undistorted=frame_is_undistorted)
             valid = [target for target in associated if target.valid]
             lost = [
@@ -688,8 +747,10 @@ class ColorTracker:
                 "candidates": [target.to_dict() for target in associated],
                 "lost_targets": lost,
                 "rejected_count": self.rejected_counts[color_name],
+                "conflicts": [target.to_dict() for target in conflicts],
                 "timed_out": False,
             }
+            results["conflicts"].extend(target.to_dict() for target in conflicts)
             results["targets"].extend(target.to_dict() for target in valid)
             self._draw_targets(frame, associated, color_name)
 

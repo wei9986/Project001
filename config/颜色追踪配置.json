@@ -8,28 +8,48 @@
       "kernel_size": 5,
       "open_iterations": 1,
       "close_iterations": 1,
-      "draw_color": [0, 0, 255]
+      "draw_color": [0, 0, 255],
+      "venue_sampled": false
     },
     "green": {
       "ranges": [[[35, 80, 80], [85, 255, 255]]],
       "kernel_size": 5,
       "open_iterations": 1,
       "close_iterations": 1,
-      "draw_color": [0, 255, 0]
+      "draw_color": [0, 255, 0],
+      "venue_sampled": false
     },
     "blue": {
       "ranges": [[[90, 80, 80], [130, 255, 255]]],
       "kernel_size": 5,
       "open_iterations": 1,
       "close_iterations": 1,
-      "draw_color": [255, 0, 0]
+      "draw_color": [255, 0, 0],
+      "venue_sampled": false
     },
     "yellow": {
       "ranges": [[[20, 100, 100], [35, 255, 255]]],
       "kernel_size": 5,
       "open_iterations": 1,
       "close_iterations": 1,
-      "draw_color": [0, 255, 255]
+      "draw_color": [0, 255, 255],
+      "venue_sampled": false
+    },
+    "black": {
+      "ranges": [],
+      "kernel_size": 5,
+      "open_iterations": 1,
+      "close_iterations": 1,
+      "draw_color": [32, 32, 32],
+      "venue_sampled": false
+    },
+    "light_blue": {
+      "ranges": [],
+      "kernel_size": 5,
+      "open_iterations": 1,
+      "close_iterations": 1,
+      "draw_color": [255, 200, 80],
+      "venue_sampled": false
     }
   },
   "tracking": {
